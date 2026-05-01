@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- jks_v1alpha1_clusterjavakeystore.yaml
+- jks_v1alpha1_javakeystore.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
