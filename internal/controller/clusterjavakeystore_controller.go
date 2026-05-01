@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -148,8 +149,7 @@ func (r *ClusterJavaKeystoreReconciler) validateAndExtractCertificatesFromConfig
 			certificateFound = true
 			certificateCount++
 
-			// Handle certificate
-			// fmt.Printf("%T %#v\n", cert, cert)
+			// Some root CAs don't have a CommonName in the Subject field so we grab the next best things
 			determinedCommonName := ""
 			if len(cert.Subject.CommonName) > 0 {
 				determinedCommonName = cert.Subject.CommonName
@@ -164,10 +164,44 @@ func (r *ClusterJavaKeystoreReconciler) validateAndExtractCertificatesFromConfig
 					}
 				}
 			}
+			pemBlock := &pem.Block{
+				Type:  "CERTIFICATE",
+				Bytes: cert.Raw,
+			}
+			var pemBuffer bytes.Buffer
+			if err := pem.Encode(&pemBuffer, pemBlock); err != nil {
+				globalLog.Error(err, "Failed to encode certificate back to PEM format", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key, "CertificateCommonName", determinedCommonName)
+				// Continue processing even if encoding fails to ensure that other valid certificates are still extracted
+				continue
+			}
+			// Next we check to make sure the determinedCommonName is unique among the certificates we have processed so far. If it is not, we will append a number to the end of it to ensure uniqueness since Common Names are not guaranteed to be unique among different certificates and we want to use the Common Name as part of the alias for the certificate in the Java Keystore.
+			originalCommonName := determinedCommonName
+			duplicateCount := 1
+			for {
+				isDuplicate := false
+				for _, certInfo := range certificates {
+					if certInfo.CommonName == determinedCommonName {
+						isDuplicate = true
+						break
+					}
+				}
+				if isDuplicate {
+					determinedCommonName = originalCommonName + " #" + fmt.Sprint(duplicateCount)
+					duplicateCount++
+				} else {
+					break
+				}
+			}
+			for _, existingCert := range certificates {
+				if bytes.Equal(existingCert.CertificateBytes, pemBuffer.Bytes()) {
+					globalLog.Info("Certificate with identical bytes already exists, skipping to avoid duplicates in Java Keystore", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key, "ExistingCertificateCommonName", existingCert.CommonName, "CurrentCertificateCommonName", determinedCommonName)
+					continue
+				}
+			}
 			certificates = append(certificates, CertificateNameMapping{
 				CommonName:       determinedCommonName,
 				ExpirationDate:   cert.NotAfter.Format(time.RFC3339),
-				CertificateBytes: pem.EncodeToMemory(block),
+				CertificateBytes: pemBuffer.Bytes(),
 			})
 		default:
 			globalLog.Info("PEM block is not a certificate, skipping", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key, "PEMBlockType", block.Type)
