@@ -1,8 +1,18 @@
 # jks-operator
-// TODO(user): Add simple overview of use/purpose
+
+The Java Keystore Operator creates Java Keystore files from PEM bundles or TLS Secrets.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The JKS Operator operates in a Cluster or Namespace scoped mode, offering cluster admins the ability to easily distribute Root Certificate Bundles via JKS blobs, or to distribute JKS blobs generated from TLS-type Secrets.
+
+### ClusterJavaKeystore
+
+- Defines a list of ConfigMaps that hold PEM encoded certificates
+- Enumerates the Certificates found in the ConfigMap(s), taking the CommonName as an alias to inject in JKS Trust Bundle.
+- Optionally takes all the default CA Certificates and enumerates them as well for inclusion (default: false)
+- With the Root CAs enumerated, will create a ConfigMap and Secret containing the JKS binary data and password in the namespace the operator was installed to.
+- When a ConfigMap or Secret is created with the annotation `jks.kemo.dev/clusterkeystore` with a value that matches the name of the ClusterJavaKeystore, the Operator will inject the created JKS into it with the key `keystore.jks`
 
 ## Getting Started
 

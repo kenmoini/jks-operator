@@ -18,13 +18,18 @@ package controller
 
 import (
 	"context"
-
-	"k8s.io/apimachinery/pkg/runtime"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"time"
 
 	jksv1alpha1 "github.com/kenmoini/jks-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ClusterJavaKeystoreReconciler reconciles a ClusterJavaKeystore object
@@ -33,6 +38,8 @@ type ClusterJavaKeystoreReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=clusterjavakeystores,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=clusterjavakeystores/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=clusterjavakeystores/finalizers,verbs=update
@@ -47,17 +54,133 @@ type ClusterJavaKeystoreReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	// _ = logf.FromContext(ctx)
+	globalLog = ctrl.Log.WithName("jks-operator-clusterjks")
 
-	// TODO(user): your logic here
+	clusterJavaKeystore := &jksv1alpha1.ClusterJavaKeystore{}
+	// enumeratedCertificates := make(map[string]CertificateNameMapping)
+	certificates := []CertificateNameMapping{}
+	globalLog.Info("Reconciling ClusterJavaKeystore", "NamespacedName", req.NamespacedName)
+
+	if err := r.Get(ctx, req.NamespacedName, clusterJavaKeystore); err != nil {
+		globalLog.Error(err, "Failed to fetch ClusterJavaKeystore", "NamespacedName", req.NamespacedName)
+		return ctrl.Result{RequeueAfter: time.Second * 30}, client.IgnoreNotFound(err)
+	} else {
+		globalLog.Info("Successfully fetched ClusterJavaKeystore", "NamespacedName", req.NamespacedName)
+
+		// Enumerate through the ConfigMaps referenced in the ClusterJavaKeystore and map them
+		for _, configMapRef := range clusterJavaKeystore.Spec.RootCAConfigMaps {
+			globalLog.Info("Processing ConfigMap reference", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace)
+
+			configMap := &corev1.ConfigMap{}
+			if err := r.Get(ctx, types.NamespacedName{Name: configMapRef.Name, Namespace: configMapRef.Namespace}, configMap); err != nil {
+				globalLog.Error(err, "Failed to fetch ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace)
+				return ctrl.Result{RequeueAfter: time.Second * 30}, client.IgnoreNotFound(err)
+			} else {
+				globalLog.Info("Successfully fetched ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace)
+
+				// If there was a key specified in the reference, validate that it exists in the ConfigMap
+				if configMapRef.Key != "" {
+					if _, keyExists := configMap.Data[configMapRef.Key]; !keyExists {
+						globalLog.Error(nil, "Specified key does not exist in ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "MissingKey", configMapRef.Key)
+						// Requeue with an error to trigger retry logic and surface the issue
+						return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+					} else {
+						globalLog.Info("Specified key exists in ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key)
+
+						certs, err := r.validateAndExtractCertificatesFromConfigMap(configMap, configMapRef)
+						if err != nil {
+							globalLog.Error(err, "Failed to validate and extract certificates from ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key)
+							return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+						}
+						certificates = append(certificates, certs...)
+
+					}
+				} else {
+					globalLog.Info("No specific key specified for ConfigMap reference, all keys will be processed if they contain valid PEM encoded certificates", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace)
+
+					// If no key was specified in the reference, we will attempt to validate all the keys in the ConfigMap and extract any valid PEM encoded certificates found
+					for key := range configMap.Data {
+						configMapRefWithKey := jksv1alpha1.ConfigMapReference{
+							Name:      configMapRef.Name,
+							Namespace: configMapRef.Namespace,
+							Key:       key,
+						}
+						certs, err := r.validateAndExtractCertificatesFromConfigMap(configMap, configMapRefWithKey)
+						if err != nil {
+							globalLog.Error(err, "Failed to validate and extract certificates from ConfigMap for specific key", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", key)
+							// Continue processing the other keys even if one key fails validation to ensure that any valid certificates are still extracted
+							continue
+						}
+						certificates = append(certificates, certs...)
+					}
+				}
+			}
+		}
+
+		// Loop through the enumerated certificates and log their Common Names and Expiration Dates
+		if len(certificates) > 0 {
+			for _, certInfo := range certificates {
+				globalLog.Info("Certificate found", "CommonName", certInfo.CommonName, "ExpirationDate", certInfo.ExpirationDate)
+			}
+		} else {
+			globalLog.Info("No certificates found in any of the referenced ConfigMaps", "NamespacedName", req.NamespacedName)
+		}
+	}
 
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *ClusterJavaKeystoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&jksv1alpha1.ClusterJavaKeystore{}).
-		Named("clusterjavakeystore").
-		Complete(r)
+func (r *ClusterJavaKeystoreReconciler) validateAndExtractCertificatesFromConfigMap(configMap *corev1.ConfigMap, configMapRef jksv1alpha1.ConfigMapReference) ([]CertificateNameMapping, error) {
+	certificates := []CertificateNameMapping{}
+	// Validate that the value of the specified key is a valid PEM encoded certificate
+	// Multiple certificates can be included in a single PEM block so we look for the "BEGIN CERTIFICATE" header to determine if there is at least one certificate included in the value
+	certificateFound := false
+	certificateCount := 0
+	data := []byte(configMap.Data[configMapRef.Key])
+	for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+		switch block.Type {
+		case "CERTIFICATE":
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				panic(err)
+			}
+			certificateFound = true
+			certificateCount++
+
+			// Handle certificate
+			// fmt.Printf("%T %#v\n", cert, cert)
+			determinedCommonName := ""
+			if len(cert.Subject.CommonName) > 0 {
+				determinedCommonName = cert.Subject.CommonName
+			} else {
+				if len(cert.Subject.OrganizationalUnit) > 0 {
+					determinedCommonName = cert.Subject.OrganizationalUnit[0]
+				} else {
+					if len(cert.Subject.Organization) > 0 {
+						determinedCommonName = cert.Subject.Organization[0]
+					} else {
+						determinedCommonName = "Unknown Common Name # " + fmt.Sprint(certificateCount)
+					}
+				}
+			}
+			certificates = append(certificates, CertificateNameMapping{
+				CommonName:       determinedCommonName,
+				ExpirationDate:   cert.NotAfter.Format(time.RFC3339),
+				CertificateBytes: pem.EncodeToMemory(block),
+			})
+		default:
+			globalLog.Info("PEM block is not a certificate, skipping", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key, "PEMBlockType", block.Type)
+		}
+	}
+
+	if !certificateFound {
+		globalLog.Error(nil, "Value of specified key does not contain a valid PEM encoded certificate", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key)
+		// Requeue with an error to trigger retry logic and surface the issue
+		return nil, errors.New("value of specified key does not contain a valid PEM encoded certificate")
+	} else {
+		globalLog.Info("Value of specified key contains valid PEM encoded certificate(s)", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key, "CertificateCount", certificateCount)
+	}
+
+	return certificates, nil
 }

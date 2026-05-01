@@ -1,0 +1,60 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+  name: jks-operator.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: ClusterJavaKeystore is the Schema for the clusterjavakeystores
+        API.
+      displayName: Cluster Java Keystore
+      kind: ClusterJavaKeystore
+      name: clusterjavakeystores.jks.kemo.dev
+      version: v1alpha1
+    - description: JavaKeystore is the Schema for the javakeystores API.
+      displayName: Java Keystore
+      kind: JavaKeystore
+      name: javakeystores.jks.kemo.dev
+      version: v1alpha1
+  description: Generates Java Keystores dynamically for distribution to Java-based
+    applications
+  displayName: Java Keystore Operator
+  icon:
+  - base64data: ""
+    mediatype: ""
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - jks
+  - java
+  - keystore
+  - certificate
+  - ca
+  - root
+  links:
+  - name: Jks Operator
+    url: https://jks-operator.domain
+  maintainers:
+  - email: ken@kenmoini.com
+    name: Ken Moini
+  maturity: alpha
+  provider:
+    name: Ken Moini
+    url: https://github.com/kenmoini/jks-operator
+  version: 0.0.0
