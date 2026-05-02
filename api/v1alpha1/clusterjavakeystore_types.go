@@ -40,6 +40,11 @@ type ClusterJavaKeystoreSpec struct {
 
 	// NamespaceSelector is a selector for the namespaces that are allowed to reference this ClusterJavaKeystore. If left absent, all namespaces will be allowed to reference this ClusterJavaKeystore.
 	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
+
+	// SystemNamespace is the namespace the operator is running in and where the Java Keystore ConfigMap and Secret will be created.  If left absent, it will default to "jks-operator".
+	SystemNamespace string `json:"systemNamespace,omitempty"`
+
+	// TargetConfigMap
 }
 
 // ConfigMapReference defines a reference to a ConfigMap that contains a Certificate.

@@ -24,4 +24,5 @@ const (
 	DefaultClusterJavaKeystoreAnnotation = "jks.kemo.dev/clusterkeystore"
 	DefaultJavaKeystoreAnnotation        = "jks.kemo.dev/keystore"
 	DefaultOperatorNamespace             = "jks-operator"
+	DefaultJavaKeystoreConfigMapKey      = "keystore.jks"
 )

@@ -24,10 +24,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"time"
 
 	jksv1alpha1 "github.com/kenmoini/jks-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	kapierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -73,6 +76,55 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 		globalLog.Info("Successfully fetched ClusterJavaKeystore", "NamespacedName", req.NamespacedName)
 
 		// =====================================================================================================================================
+		// Check to see if the SystemNamespace is set, if not we will default it to "jks-operator", and if it exists
+		// we will log the value for visibility since that is where the Java Keystore ConfigMap and Secret will be created
+		if clusterJavaKeystore.Spec.SystemNamespace == "" {
+			clusterJavaKeystore.Spec.SystemNamespace = DefaultOperatorNamespace
+			globalLog.Info("SystemNamespace not set in ClusterJavaKeystore spec, defaulting to '"+DefaultOperatorNamespace+"'", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+		} else {
+			globalLog.Info("SystemNamespace is set in ClusterJavaKeystore spec", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+		}
+
+		// Check if the namespace exists, if not error out
+		namespace := &corev1.Namespace{}
+		if err := r.Get(ctx, types.NamespacedName{Name: clusterJavaKeystore.Spec.SystemNamespace}, namespace); err != nil {
+			globalLog.Error(err, "Failed to fetch SystemNamespace", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+			return ctrl.Result{RequeueAfter: time.Second * 30}, client.IgnoreNotFound(err)
+		} else {
+			globalLog.Info("Successfully fetched SystemNamespace specified in ClusterJavaKeystore spec", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+		}
+
+		// =====================================================================================================================================
+		// Check if the KeyStorePasswordSecretRef is set, if so grab the Secret, if not set it to a default of "changeit"
+		keyStorePassword := DefaultJavaKeystorePassword
+		if clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name != "" && clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace != "" {
+			globalLog.Info("KeyStorePasswordSecretRef is set in ClusterJavaKeystore spec, attempting to fetch Secret for KeyStore password", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace)
+			passwordSecret, err := GetSecret(clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, r.Client)
+			if err != nil {
+				globalLog.Error(err, "Failed to fetch Secret specified in KeyStorePasswordSecretRef for KeyStore password, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace)
+			} else {
+				globalLog.Info("Successfully fetched Secret specified in KeyStorePasswordSecretRef for KeyStore password", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace)
+				if clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key != "" {
+					if password, keyExists := passwordSecret.Data[clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key]; keyExists {
+						keyStorePassword = string(password)
+						globalLog.Info("Successfully retrieved KeyStore password from Secret specified in KeyStorePasswordSecretRef", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "KeyUsed", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key)
+					} else {
+						globalLog.Error(nil, "Specified key in KeyStorePasswordSecretRef does not exist in Secret, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "MissingKey", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key)
+					}
+				} else {
+					if password, keyExists := passwordSecret.Data["password"]; keyExists {
+						keyStorePassword = string(password)
+						globalLog.Info("Successfully retrieved KeyStore password from Secret specified in KeyStorePasswordSecretRef using default key 'password'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "KeyUsed", "password")
+					} else {
+						globalLog.Error(nil, "Default key 'password' does not exist in Secret specified in KeyStorePasswordSecretRef, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "MissingKey", "password")
+					}
+				}
+			}
+		} else {
+			globalLog.Info("KeyStorePasswordSecretRef is not set in ClusterJavaKeystore spec, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName)
+		}
+
+		// =====================================================================================================================================
 		// Check if we're including the default trusted CA store certificates and if so, attempt to read them in and include them in the list of certificates to be added to the Java Keystore. If the default CA certificates file cannot be read for any reason, we will log the error and continue processing without including the default CA certificates since the user may not care about including them and we don't want a failure to read the default CA certificates to prevent any other valid certificates from being added to the Java Keystore.
 		if clusterJavaKeystore.Spec.AddDefaultCACertificates {
 			systemCACertPath := clusterJavaKeystore.Spec.DefaultCACertificatesPath
@@ -116,7 +168,8 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 						if !isDuplicate {
 							certificates = append(certificates, CertificateNameMapping{
 								CommonName:       determinedCommonName,
-								ExpirationDate:   cert.NotAfter.Format(time.RFC3339),
+								ExpirationDate:   cert.NotAfter,
+								CreationDate:     cert.NotBefore,
 								CertificateBytes: pemBuffer.Bytes(),
 							})
 						}
@@ -213,10 +266,124 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 
 		// =====================================================================================================================================
-		// Loop through the enumerated certificates and log their Common Names and Expiration Dates
+		// If we have detected valid certificates, continue to creating the JKS and Secret/ConfigMap
 		if len(certificates) > 0 {
+			// Create a new Keystore object
+			ks, err := createJavaKeystore()
+			if err != nil {
+				globalLog.Error(err, "Failed to create Java Keystore object")
+				return ctrl.Result{RequeueAfter: time.Second * 30}, err
+			}
+
+			// =====================================================================================================================================
+			// Loop through the enumerated certificates and log their Common Names and Expiration Dates
 			for _, certInfo := range certificates {
 				globalLog.Info("Certificate found", "CommonName", certInfo.CommonName, "ExpirationDate", certInfo.ExpirationDate)
+				// Create TCE
+				aliase, tce := createTrustedCertificateEntry(certInfo)
+				// Add the TCE to the Keystore
+				if err := ks.SetTrustedCertificateEntry(aliase, tce); err != nil {
+					globalLog.Error(err, "Failed to add Trusted Certificate Entry to Java Keystore", "CertificateCommonName", certInfo.CommonName)
+				} else {
+					globalLog.Info("Successfully added Trusted Certificate Entry to Java Keystore", "CertificateCommonName", certInfo.CommonName)
+				}
+			}
+
+			// Create a ConfigMap in the system namespace with binaryData to store the JKS
+			generatedConfigMap := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterJavaKeystore.Name + "-jks",
+					Namespace: clusterJavaKeystore.Spec.SystemNamespace,
+					OwnerReferences: []metav1.OwnerReference{
+						*metav1.NewControllerRef(clusterJavaKeystore, jksv1alpha1.GroupVersion.WithKind("ClusterJavaKeystore")),
+					},
+				},
+				BinaryData: map[string][]byte{},
+			}
+
+			// Store the JKS in a buffer and then set the buffer bytes to the BinaryData of the ConfigMap
+			// We have to store it in a buffer first because the keystore library writes the JKS to an io.Writer and does not return the bytes directly, so we use a bytes.Buffer as the io.Writer to capture the bytes of the generated JKS.
+			var jksBuffer bytes.Buffer
+			if err := ks.Store(&jksBuffer, []byte(keyStorePassword)); err != nil {
+				globalLog.Error(err, "Failed to store Java Keystore to buffer", "NamespacedName", req.NamespacedName)
+				return ctrl.Result{RequeueAfter: time.Second * 30}, err
+			} else {
+				globalLog.Info("Successfully stored Java Keystore to buffer", "NamespacedName", req.NamespacedName)
+			}
+
+			// Set the bytes of the generated JKS to the BinaryData of the ConfigMap under the key "keystore.jks" by default
+			generatedConfigMap.BinaryData[DefaultJavaKeystoreConfigMapKey] = jksBuffer.Bytes()
+
+			// Check if the ConfigMap already exists
+			existingConfigMap := &corev1.ConfigMap{}
+			err = r.Get(ctx, types.NamespacedName{Name: generatedConfigMap.Name, Namespace: generatedConfigMap.Namespace}, existingConfigMap)
+			if err != nil && kapierrors.IsNotFound(err) {
+				// If the ConfigMap does not exist, create it
+				if err := r.Create(ctx, generatedConfigMap); err != nil {
+					globalLog.Error(err, "Failed to create ConfigMap to store generated Java Keystore", "NamespacedName", req.NamespacedName, "ConfigMapName", generatedConfigMap.Name, "ConfigMapNamespace", generatedConfigMap.Namespace)
+					return ctrl.Result{RequeueAfter: time.Second * 30}, err
+				} else {
+					globalLog.Info("Successfully created ConfigMap to store generated Java Keystore", "NamespacedName", req.NamespacedName, "ConfigMapName", generatedConfigMap.Name, "ConfigMapNamespace", generatedConfigMap.Namespace)
+				}
+			} else if err != nil {
+				globalLog.Error(err, "Failed to fetch existing ConfigMap to store generated Java Keystore", "NamespacedName", req.NamespacedName, "ConfigMapName", generatedConfigMap.Name, "ConfigMapNamespace", generatedConfigMap.Namespace)
+				return ctrl.Result{RequeueAfter: time.Second * 30}, err
+			} else {
+				// Check if the existing ConfigMap's BinaryData is different from the generated ConfigMap's BinaryData, and if so, update it
+				// TODO/NOTE: Tecnically this comparison will always show a difference because of how the JKS is generated with a password, the hash will always be different thus creating a different byte array even if the certificates included are the same.
+				if !reflect.DeepEqual(existingConfigMap.BinaryData, generatedConfigMap.BinaryData) {
+					existingConfigMap.BinaryData = generatedConfigMap.BinaryData
+					if err := r.Update(ctx, existingConfigMap); err != nil {
+						globalLog.Error(err, "Failed to update ConfigMap to store generated Java Keystore", "NamespacedName", req.NamespacedName, "ConfigMapName", existingConfigMap.Name, "ConfigMapNamespace", existingConfigMap.Namespace)
+						return ctrl.Result{RequeueAfter: time.Second * 30}, err
+					} else {
+						globalLog.Info("Successfully updated ConfigMap to store generated Java Keystore", "NamespacedName", req.NamespacedName, "ConfigMapName", existingConfigMap.Name, "ConfigMapNamespace", existingConfigMap.Namespace)
+					}
+				} else {
+					globalLog.Info("ConfigMap to store generated Java Keystore already exists and is up to date, no update needed", "NamespacedName", req.NamespacedName, "ConfigMapName", existingConfigMap.Name, "ConfigMapNamespace", existingConfigMap.Namespace)
+				}
+			}
+
+			// Create or Update a Secret in the system namespace to store the password for the JKS
+			generatedSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterJavaKeystore.Name + "-jks-password",
+					Namespace: clusterJavaKeystore.Spec.SystemNamespace,
+					OwnerReferences: []metav1.OwnerReference{
+						*metav1.NewControllerRef(clusterJavaKeystore, jksv1alpha1.GroupVersion.WithKind("ClusterJavaKeystore")),
+					},
+				},
+				Data: map[string][]byte{
+					"password": []byte(keyStorePassword),
+				},
+			}
+
+			existingSecret := &corev1.Secret{}
+			err = r.Get(ctx, types.NamespacedName{Name: generatedSecret.Name, Namespace: generatedSecret.Namespace}, existingSecret)
+			if err != nil && kapierrors.IsNotFound(err) {
+				// If the Secret does not exist, create it
+				if err := r.Create(ctx, generatedSecret); err != nil {
+					globalLog.Error(err, "Failed to create Secret to store Java Keystore password", "NamespacedName", req.NamespacedName, "SecretName", generatedSecret.Name, "SecretNamespace", generatedSecret.Namespace)
+					return ctrl.Result{RequeueAfter: time.Second * 30}, err
+				} else {
+					globalLog.Info("Successfully created Secret to store Java Keystore password", "NamespacedName", req.NamespacedName, "SecretName", generatedSecret.Name, "SecretNamespace", generatedSecret.Namespace)
+				}
+			} else if err != nil {
+				globalLog.Error(err, "Failed to fetch existing Secret to store Java Keystore password", "NamespacedName", req.NamespacedName, "SecretName", generatedSecret.Name, "SecretNamespace", generatedSecret.Namespace)
+				return ctrl.Result{RequeueAfter: time.Second * 30}, err
+			} else {
+				// Check if the existing Secret's Data is different from the generated Secret's Data, and if so, update it
+				if !reflect.DeepEqual(existingSecret.Data, generatedSecret.Data) {
+					existingSecret.Data = generatedSecret.Data
+					if err := r.Update(ctx, existingSecret); err != nil {
+						globalLog.Error(err, "Failed to update Secret to store Java Keystore password", "NamespacedName", req.NamespacedName, "SecretName", existingSecret.Name, "SecretNamespace", existingSecret.Namespace)
+						return ctrl.Result{RequeueAfter: time.Second * 30}, err
+					} else {
+						globalLog.Info("Successfully updated Secret to store Java Keystore password", "NamespacedName", req.NamespacedName, "SecretName", existingSecret.Name, "SecretNamespace", existingSecret.Namespace)
+					}
+				} else {
+					globalLog.Info("Secret to store Java Keystore password already exists and is up to date, no update needed", "NamespacedName", req.NamespacedName, "SecretName", existingSecret.Name, "SecretNamespace", existingSecret.Namespace)
+				}
 			}
 		} else {
 			globalLog.Info("No certificates found in any of the referenced ConfigMaps", "NamespacedName", req.NamespacedName)
@@ -233,12 +400,16 @@ func (r *ClusterJavaKeystoreReconciler) validateAndExtractCertificatesFromConfig
 	certificateFound := false
 	certificateCount := 0
 	data := []byte(configMap.Data[configMapRef.Key])
+	// Loop through the blocks in the ConfigMap value to find all certificates available
 	for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
 		switch block.Type {
 		case "CERTIFICATE":
+			// Check if we can parse this as an x509 certificate
 			cert, err := x509.ParseCertificate(block.Bytes)
 			if err != nil {
-				panic(err)
+				globalLog.Error(err, "Failed to parse certificate from PEM block, skipping this block", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key)
+				// Continue processing even if parsing fails to ensure that other valid certificates are still extracted
+				continue
 			}
 			certificateFound = true
 			certificateCount++
@@ -246,6 +417,7 @@ func (r *ClusterJavaKeystoreReconciler) validateAndExtractCertificatesFromConfig
 			// Some root CAs don't have a CommonName in the Subject field so we grab the next best thing(s)
 			determinedCommonName := determineCommonNameForCertificate(cert)
 
+			// Encode the certificate back for storage in the Java Keystore
 			pemBlock := &pem.Block{
 				Type:  "CERTIFICATE",
 				Bytes: cert.Raw,
@@ -274,15 +446,18 @@ func (r *ClusterJavaKeystoreReconciler) validateAndExtractCertificatesFromConfig
 					break
 				}
 			}
+			// Double check to ensure there are no duplicate certificates
 			for _, existingCert := range certificates {
 				if bytes.Equal(existingCert.CertificateBytes, pemBuffer.Bytes()) {
 					globalLog.Info("Certificate with identical bytes already exists, skipping to avoid duplicates in Java Keystore", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key, "ExistingCertificateCommonName", existingCert.CommonName, "CurrentCertificateCommonName", determinedCommonName)
 					continue
 				}
 			}
+			// If we made it here, this certificate is valid and not a duplicate, so we can add it to the list of certificates to be added to the Java Keystore
 			certificates = append(certificates, CertificateNameMapping{
 				CommonName:       determinedCommonName,
-				ExpirationDate:   cert.NotAfter.Format(time.RFC3339),
+				ExpirationDate:   cert.NotAfter,
+				CreationDate:     cert.NotBefore,
 				CertificateBytes: pemBuffer.Bytes(),
 			})
 		default:
@@ -299,23 +474,4 @@ func (r *ClusterJavaKeystoreReconciler) validateAndExtractCertificatesFromConfig
 	}
 
 	return certificates, nil
-}
-
-func determineCommonNameForCertificate(cert *x509.Certificate) string {
-	// Some root CAs don't have a CommonName in the Subject field so we grab the next best things
-	determinedCommonName := ""
-	if len(cert.Subject.CommonName) > 0 {
-		determinedCommonName = cert.Subject.CommonName
-	} else {
-		if len(cert.Subject.OrganizationalUnit) > 0 {
-			determinedCommonName = cert.Subject.OrganizationalUnit[0]
-		} else {
-			if len(cert.Subject.Organization) > 0 {
-				determinedCommonName = cert.Subject.Organization[0]
-			} else {
-				determinedCommonName = "Unknown Common Name # " + fmt.Sprint(time.Now().UnixNano())
-			}
-		}
-	}
-	return determinedCommonName
 }

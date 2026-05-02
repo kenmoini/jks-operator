@@ -1,7 +1,10 @@
 package controller
 
+import "time"
+
 type CertificateNameMapping struct {
 	CommonName       string
-	ExpirationDate   string
+	ExpirationDate   time.Time
+	CreationDate     time.Time
 	CertificateBytes []byte
 }
