@@ -153,6 +153,70 @@ func (r *ClusterJavaKeystoreReconciler) loadDefaultCACertificates(cjks *jksv1alp
 	return certificates
 }
 
+// collectConfigMapCertificates iterates Spec.RootCAConfigMaps, fetches each ConfigMap, and
+// appends every unique certificate found into certificates. Returns the first hard error
+// (fetch failure or a missing required key); the caller applies client.IgnoreNotFound.
+func (r *ClusterJavaKeystoreReconciler) collectConfigMapCertificates(ctx context.Context, cjks *jksv1alpha1.ClusterJavaKeystore, req ctrl.Request, certificates []CertificateNameMapping) ([]CertificateNameMapping, error) {
+	if len(cjks.Spec.RootCAConfigMaps) == 0 {
+		globalLog.Info("No ConfigMap references found in ClusterJavaKeystore, skipping certificate enumeration", "NamespacedName", req.NamespacedName)
+		return certificates, nil
+	}
+	for _, ref := range cjks.Spec.RootCAConfigMaps {
+		var err error
+		certificates, err = r.processConfigMapReference(ctx, ref, certificates)
+		if err != nil {
+			return certificates, err
+		}
+	}
+	return certificates, nil
+}
+
+// processConfigMapReference fetches one referenced ConfigMap and dispatches to per-key
+// extraction. If ref.Key is set, only that key is processed (and missing it is a hard error
+// that stops reconcile). If ref.Key is empty, every key is attempted and per-key extraction
+// failures are logged and skipped.
+func (r *ClusterJavaKeystoreReconciler) processConfigMapReference(ctx context.Context, ref jksv1alpha1.ConfigMapReference, certificates []CertificateNameMapping) ([]CertificateNameMapping, error) {
+	globalLog.Info("Processing ConfigMap reference", "ConfigMapName", ref.Name, "ConfigMapNamespace", ref.Namespace)
+	configMap := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}, configMap); err != nil {
+		globalLog.Error(err, "Failed to fetch ConfigMap", "ConfigMapName", ref.Name, "ConfigMapNamespace", ref.Namespace)
+		return certificates, err
+	}
+	globalLog.Info("Successfully fetched ConfigMap", "ConfigMapName", ref.Name, "ConfigMapNamespace", ref.Namespace)
+	if ref.Key != "" {
+		if _, ok := configMap.Data[ref.Key]; !ok {
+			globalLog.Error(nil, "Specified key does not exist in ConfigMap", "ConfigMapName", ref.Name, "ConfigMapNamespace", ref.Namespace, "MissingKey", ref.Key)
+			return certificates, fmt.Errorf("ConfigMap %s/%s missing key %q", ref.Namespace, ref.Name, ref.Key)
+		}
+		globalLog.Info("Specified key exists in ConfigMap", "ConfigMapName", ref.Name, "ConfigMapNamespace", ref.Namespace, "Key", ref.Key)
+		return r.appendCertsFromConfigMapKey(configMap, ref, certificates)
+	}
+	globalLog.Info("No specific key specified for ConfigMap reference, all keys will be processed if they contain valid PEM encoded certificates", "ConfigMapName", ref.Name, "ConfigMapNamespace", ref.Namespace)
+	for key := range configMap.Data {
+		perKey := jksv1alpha1.ConfigMapReference{Name: ref.Name, Namespace: ref.Namespace, Key: key}
+		var err error
+		certificates, err = r.appendCertsFromConfigMapKey(configMap, perKey, certificates)
+		if err != nil {
+			globalLog.Error(err, "Failed to validate and extract certificates from ConfigMap for specific key", "ConfigMapName", ref.Name, "ConfigMapNamespace", ref.Namespace, "Key", key)
+			continue
+		}
+	}
+	return certificates, nil
+}
+
+// appendCertsFromConfigMapKey extracts all PEM certificates from configMap.Data[ref.Key]
+// and appends each unique one to certificates.
+func (r *ClusterJavaKeystoreReconciler) appendCertsFromConfigMapKey(configMap *corev1.ConfigMap, ref jksv1alpha1.ConfigMapReference, certificates []CertificateNameMapping) ([]CertificateNameMapping, error) {
+	certs, err := r.validateAndExtractCertificatesFromConfigMap(configMap, ref)
+	if err != nil {
+		return certificates, err
+	}
+	for _, ci := range certs {
+		certificates = appendUniqueCertificate(certificates, ci, "ConfigMapName", ref.Name, "ConfigMapNamespace", ref.Namespace, "Key", ref.Key)
+	}
+	return certificates, nil
+}
+
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=clusterjavakeystores,verbs=get;list;watch;create;update;patch;delete
@@ -200,86 +264,10 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 		certificates = r.loadDefaultCACertificates(clusterJavaKeystore, req, certificates)
 
 		// =====================================================================================================================================
-		// Enumerate through the ConfigMaps referenced in the ClusterJavaKeystore and map them
-		if len(clusterJavaKeystore.Spec.RootCAConfigMaps) > 0 {
-			for _, configMapRef := range clusterJavaKeystore.Spec.RootCAConfigMaps {
-				globalLog.Info("Processing ConfigMap reference", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace)
-
-				configMap := &corev1.ConfigMap{}
-				if err := r.Get(ctx, types.NamespacedName{Name: configMapRef.Name, Namespace: configMapRef.Namespace}, configMap); err != nil {
-					globalLog.Error(err, "Failed to fetch ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace)
-					return ctrl.Result{RequeueAfter: time.Second * 30}, client.IgnoreNotFound(err)
-				} else {
-					globalLog.Info("Successfully fetched ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace)
-
-					// If there was a key specified in the reference, validate that it exists in the ConfigMap
-					if configMapRef.Key != "" {
-						if _, keyExists := configMap.Data[configMapRef.Key]; !keyExists {
-							globalLog.Error(nil, "Specified key does not exist in ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "MissingKey", configMapRef.Key)
-							// Requeue with an error to trigger retry logic and surface the issue
-							return ctrl.Result{RequeueAfter: time.Second * 30}, nil
-						} else {
-							globalLog.Info("Specified key exists in ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key)
-
-							certs, err := r.validateAndExtractCertificatesFromConfigMap(configMap, configMapRef)
-							if err != nil {
-								globalLog.Error(err, "Failed to validate and extract certificates from ConfigMap", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key)
-								return ctrl.Result{RequeueAfter: time.Second * 30}, nil
-							}
-							// Ensure there are no duplicate certificates being added to the list by comparing the bytes of the certificates since Common Names are not guaranteed to be unique among different certificates. If a duplicate is found, it will be skipped and not added to the list to avoid issues with adding duplicate certificates to the Java Keystore.
-							for _, certInfo := range certs {
-								isDuplicate := false
-								for _, existingCert := range certificates {
-									if bytes.Equal(existingCert.CertificateBytes, certInfo.CertificateBytes) {
-										globalLog.Info("Certificate with identical bytes already exists, skipping to avoid duplicates in Java Keystore", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key, "ExistingCertificateCommonName", existingCert.CommonName, "CurrentCertificateCommonName", certInfo.CommonName)
-										isDuplicate = true
-										break
-									}
-								}
-								if !isDuplicate {
-									certificates = append(certificates, certInfo)
-								}
-							}
-							// certificates = append(certificates, certs...)
-
-						}
-					} else {
-						globalLog.Info("No specific key specified for ConfigMap reference, all keys will be processed if they contain valid PEM encoded certificates", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace)
-
-						// If no key was specified in the reference, we will attempt to validate all the keys in the ConfigMap and extract any valid PEM encoded certificates found
-						for key := range configMap.Data {
-							configMapRefWithKey := jksv1alpha1.ConfigMapReference{
-								Name:      configMapRef.Name,
-								Namespace: configMapRef.Namespace,
-								Key:       key,
-							}
-							certs, err := r.validateAndExtractCertificatesFromConfigMap(configMap, configMapRefWithKey)
-							if err != nil {
-								globalLog.Error(err, "Failed to validate and extract certificates from ConfigMap for specific key", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", key)
-								// Continue processing the other keys even if one key fails validation to ensure that any valid certificates are still extracted
-								continue
-							}
-							// Ensure there are no duplicate certificates being added to the list by comparing the bytes of the certificates since Common Names are not guaranteed to be unique among different certificates. If a duplicate is found, it will be skipped and not added to the list to avoid issues with adding duplicate certificates to the Java Keystore.
-							for _, certInfo := range certs {
-								isDuplicate := false
-								for _, existingCert := range certificates {
-									if bytes.Equal(existingCert.CertificateBytes, certInfo.CertificateBytes) {
-										globalLog.Info("Certificate with identical bytes already exists, skipping to avoid duplicates in Java Keystore", "ConfigMapName", configMapRef.Name, "ConfigMapNamespace", configMapRef.Namespace, "Key", configMapRef.Key, "ExistingCertificateCommonName", existingCert.CommonName, "CurrentCertificateCommonName", certInfo.CommonName)
-										isDuplicate = true
-										break
-									}
-								}
-								if !isDuplicate {
-									certificates = append(certificates, certInfo)
-								}
-							}
-							// certificates = append(certificates, certs...)
-						}
-					}
-				}
-			}
-		} else {
-			globalLog.Info("No ConfigMap references found in ClusterJavaKeystore, skipping certificate enumeration", "NamespacedName", req.NamespacedName)
+		certificates, err = r.collectConfigMapCertificates(ctx, clusterJavaKeystore, req, certificates)
+		if err != nil {
+			globalLog.Error(err, "Failed to collect certificates from referenced ConfigMaps", "NamespacedName", req.NamespacedName)
+			return ctrl.Result{RequeueAfter: time.Second * 30}, client.IgnoreNotFound(err)
 		}
 
 		// =====================================================================================================================================
