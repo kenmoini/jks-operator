@@ -168,9 +168,9 @@ var _ = Describe("ClusterJavaKeystore Controller", func() {
 			Expect(sysCM.Annotations[DefaultOwningComponentAnnotationKey]).To(Equal("ClusterJavaKeystore"))
 			Expect(sysCM.Annotations[DefaultOwningInstanceAnnotationKey]).To(Equal(resourceName))
 
-			By("verifying the cert-hash matches computeCertSetHash over the input cert")
+			By("verifying the cert-hash matches computeKeystoreSourceHash over the input cert")
 			normalized := mustReencodePEM(pemCert)
-			expectedHash := computeCertSetHash([]CertificateNameMapping{{CertificateBytes: normalized}})
+			expectedHash := computeKeystoreSourceHash([]CertificateNameMapping{{CertificateBytes: normalized}}, nil)
 			Expect(sysCM.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation]).To(Equal(expectedHash))
 
 			By("verifying the password Secret exists with the default password")

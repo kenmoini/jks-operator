@@ -18,46 +18,260 @@ package controller
 
 import (
 	"context"
+	"reflect"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	kapierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	jksv1alpha1 "github.com/kenmoini/jks-operator/api/v1alpha1"
 )
 
-// JavaKeystoreReconciler reconciles a JavaKeystore object
+// JavaKeystoreReconciler reconciles a JavaKeystore object. The namespaced JavaKeystore
+// operates within the namespace its CR lives in: all referenced ConfigMaps/Secrets must
+// be in that namespace, and the rendered system ConfigMap and password Secret are written
+// there too. The cross-namespace machinery used by ClusterJavaKeystore (system namespace,
+// namespace selector, label-based fan-out) does not apply here — owner references handle
+// GC cleanly because outputs share scope with the CR.
 type JavaKeystoreReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
+// resolveKeystorePassword returns the password to use for the generated Java Keystore.
+// Precedence: KeyStorePasswordSecretRef[Key] > KeyStorePasswordSecretRef[DefaultJavaKeystorePasswordSecretKey] > DefaultJavaKeystorePassword.
+// Any failure to resolve (ref unset, secret fetch error, key missing) falls back to
+// DefaultJavaKeystorePassword and logs the cause. The Secret is fetched from the CR's
+// own namespace because NamespacedSecretReference has no Namespace field.
+func (r *JavaKeystoreReconciler) resolveKeystorePassword(jks *jksv1alpha1.JavaKeystore, req ctrl.Request) string {
+	ref := jks.Spec.KeyStorePasswordSecretRef
+	if ref.Name == "" {
+		globalLog.Info("KeyStorePasswordSecretRef is not set in JavaKeystore spec, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName)
+		return DefaultJavaKeystorePassword
+	}
+	globalLog.Info("KeyStorePasswordSecretRef is set in JavaKeystore spec, attempting to fetch Secret for KeyStore password", "NamespacedName", req.NamespacedName, "SecretName", ref.Name, "SecretNamespace", req.Namespace)
+	secret, err := GetSecret(ref.Name, req.Namespace, r.Client)
+	if err != nil {
+		globalLog.Error(err, "Failed to fetch Secret specified in KeyStorePasswordSecretRef for KeyStore password, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", ref.Name, "SecretNamespace", req.Namespace)
+		return DefaultJavaKeystorePassword
+	}
+	key := ref.Key
+	if key == "" {
+		key = DefaultJavaKeystorePasswordSecretKey
+	}
+	password, ok := secret.Data[key]
+	if !ok {
+		globalLog.Error(nil, "Specified key in KeyStorePasswordSecretRef does not exist in Secret, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", ref.Name, "SecretNamespace", req.Namespace, "MissingKey", key)
+		return DefaultJavaKeystorePassword
+	}
+	globalLog.Info("Successfully retrieved KeyStore password from Secret specified in KeyStorePasswordSecretRef", "NamespacedName", req.NamespacedName, "SecretName", ref.Name, "SecretNamespace", req.Namespace, "KeyUsed", key)
+	return string(password)
+}
+
+// reconcileSystemConfigMap renders the JKS bytes (only when the on-cluster ConfigMap is
+// stale per systemConfigMapIsCurrent) and creates or updates the system ConfigMap with
+// the rendered bytes, source-hash annotation, and ownership stamps. The output ConfigMap
+// is named "<jks.Name>-jks" and lives in the CR's namespace.
+func (r *JavaKeystoreReconciler) reconcileSystemConfigMap(ctx context.Context, jks *jksv1alpha1.JavaKeystore, certificates []CertificateNameMapping, keypairs []KeypairEntry, password, hash string) error {
+	name := types.NamespacedName{Name: jks.Name + "-jks", Namespace: jks.Namespace}
+	existing := &corev1.ConfigMap{}
+	err := r.Get(ctx, name, existing)
+	if err != nil && !kapierrors.IsNotFound(err) {
+		globalLog.Error(err, "Failed to fetch existing ConfigMap to store generated Java Keystore", "ConfigMapName", name.Name, "ConfigMapNamespace", name.Namespace)
+		return err
+	}
+	cmExists := err == nil
+
+	if cmExists && systemConfigMapIsCurrent(existing, JKS_CR_Name, jks.Name, hash) {
+		globalLog.Info("System ConfigMap already up to date (source-hash matches), skipping render and update", "ConfigMapName", name.Name, "SourceHash", hash)
+		return nil
+	}
+
+	jksBytes, err := renderKeystoreBytes(certificates, keypairs, password)
+	if err != nil {
+		globalLog.Error(err, "Failed to render Java Keystore bytes", "JavaKeystore", jks.Name)
+		return err
+	}
+	globalLog.Info("Successfully rendered Java Keystore bytes", "JavaKeystore", jks.Name)
+
+	if !cmExists {
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name.Name,
+				Namespace: name.Namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(jks, jksv1alpha1.GroupVersion.WithKind(JKS_CR_Name)),
+				},
+			},
+			BinaryData: map[string][]byte{DefaultJavaKeystoreConfigMapKey: jksBytes},
+		}
+		setOwnershipAnnotations(cm, JKS_CR_Name, jks.Name)
+		cm.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] = hash
+		if err := r.Create(ctx, cm); err != nil {
+			globalLog.Error(err, "Failed to create ConfigMap to store generated Java Keystore", "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace)
+			return err
+		}
+		globalLog.Info("Successfully created ConfigMap to store generated Java Keystore", "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace, "SourceHash", hash)
+		return nil
+	}
+
+	if existing.BinaryData == nil {
+		existing.BinaryData = map[string][]byte{}
+	}
+	existing.BinaryData[DefaultJavaKeystoreConfigMapKey] = jksBytes
+	setOwnershipAnnotations(existing, JKS_CR_Name, jks.Name)
+	existing.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] = hash
+	if err := r.Update(ctx, existing); err != nil {
+		globalLog.Error(err, "Failed to update ConfigMap to store generated Java Keystore", "ConfigMapName", existing.Name, "ConfigMapNamespace", existing.Namespace)
+		return err
+	}
+	globalLog.Info("Successfully updated ConfigMap to store generated Java Keystore", "ConfigMapName", existing.Name, "ConfigMapNamespace", existing.Namespace, "SourceHash", hash)
+	return nil
+}
+
+// reconcileSystemSecret create-or-updates the password Secret for this CR. Updates only
+// fire when the existing Data differs OR ownership annotations are missing/wrong. The
+// output Secret is named "<jks.Name>-jks-password" and lives in the CR's namespace.
+func (r *JavaKeystoreReconciler) reconcileSystemSecret(ctx context.Context, jks *jksv1alpha1.JavaKeystore, password string) error {
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jks.Name + "-jks-password",
+			Namespace: jks.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(jks, jksv1alpha1.GroupVersion.WithKind(JKS_CR_Name)),
+			},
+		},
+		Data: map[string][]byte{DefaultJavaKeystorePasswordSecretKey: []byte(password)},
+	}
+	setOwnershipAnnotations(desired, JKS_CR_Name, jks.Name)
+
+	existing := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
+	if kapierrors.IsNotFound(err) {
+		if err := r.Create(ctx, desired); err != nil {
+			globalLog.Error(err, "Failed to create Secret to store Java Keystore password", "SecretName", desired.Name, "SecretNamespace", desired.Namespace)
+			return err
+		}
+		globalLog.Info("Successfully created Secret to store Java Keystore password", "SecretName", desired.Name, "SecretNamespace", desired.Namespace)
+		return nil
+	}
+	if err != nil {
+		globalLog.Error(err, "Failed to fetch existing Secret to store Java Keystore password", "SecretName", desired.Name, "SecretNamespace", desired.Namespace)
+		return err
+	}
+
+	needsUpdate := !reflect.DeepEqual(existing.Data, desired.Data) || !hasOwnershipAnnotations(existing, JKS_CR_Name, jks.Name)
+	if !needsUpdate {
+		globalLog.Info("Secret to store Java Keystore password already exists and is up to date, no update needed", "SecretName", existing.Name, "SecretNamespace", existing.Namespace)
+		return nil
+	}
+	existing.Data = desired.Data
+	setOwnershipAnnotations(existing, JKS_CR_Name, jks.Name)
+	if err := r.Update(ctx, existing); err != nil {
+		globalLog.Error(err, "Failed to update Secret to store Java Keystore password", "SecretName", existing.Name, "SecretNamespace", existing.Namespace)
+		return err
+	}
+	globalLog.Info("Successfully updated Secret to store Java Keystore password", "SecretName", existing.Name, "SecretNamespace", existing.Namespace)
+	return nil
+}
+
+// +kubebuilder:rbac:groups=core,resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=javakeystores,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=javakeystores/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=javakeystores/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the JavaKeystore object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *JavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	globalLog = ctrl.Log.WithName("jks-operator-jks")
+	globalLog.Info("Reconciling JavaKeystore", "NamespacedName", req.NamespacedName)
 
-	// TODO(user): your logic here
+	jks := &jksv1alpha1.JavaKeystore{}
+	if err := r.Get(ctx, req.NamespacedName, jks); err != nil {
+		globalLog.Error(err, "Failed to fetch JavaKeystore", "NamespacedName", req.NamespacedName)
+		return ctrl.Result{RequeueAfter: time.Second * 30}, client.IgnoreNotFound(err)
+	}
+	globalLog.Info("Successfully fetched JavaKeystore", "NamespacedName", req.NamespacedName)
+
+	keyStorePassword := r.resolveKeystorePassword(jks, req)
+
+	certificates := loadDefaultCACertificatesFromDisk(
+		jks.Spec.AddDefaultCACertificates,
+		jks.Spec.DefaultCACertificatesPath,
+		nil,
+	)
+
+	// NamespacedConfigMapReference omits the Namespace field — every ref is implicitly
+	// in the CR's namespace. Stamp it on so the namespace-agnostic helper sees a fully
+	// qualified ref.
+	normalizedRefs := make([]jksv1alpha1.ConfigMapReference, 0, len(jks.Spec.RootCAConfigMaps))
+	for _, ref := range jks.Spec.RootCAConfigMaps {
+		normalizedRefs = append(normalizedRefs, jksv1alpha1.ConfigMapReference{
+			Name:      ref.Name,
+			Namespace: req.Namespace,
+			Key:       ref.Key,
+		})
+	}
+
+	certificates, err := collectCertificatesFromConfigMaps(ctx, r.Client, normalizedRefs, certificates)
+	if err != nil {
+		globalLog.Error(err, "Failed to collect certificates from referenced ConfigMaps", "NamespacedName", req.NamespacedName)
+		return ctrl.Result{RequeueAfter: time.Second * 30}, client.IgnoreNotFound(err)
+	}
+
+	existingAliases := make([]string, 0, len(certificates))
+	for _, ci := range certificates {
+		existingAliases = append(existingAliases, ci.CommonName)
+	}
+	keypairs := loadTLSKeypairsFromSecrets(ctx, r.Client, req.Namespace, jks.Spec.TLSCertSecretRef, existingAliases)
+
+	if len(certificates) == 0 && len(keypairs) == 0 {
+		globalLog.Info("No certificates or TLS keypairs found in any of the referenced sources, skipping keystore render", "NamespacedName", req.NamespacedName)
+		return ctrl.Result{}, nil
+	}
+
+	for _, certInfo := range certificates {
+		globalLog.Info("Certificate found", "CommonName", certInfo.CommonName, "ExpirationDate", certInfo.ExpirationDate)
+	}
+	for _, ke := range keypairs {
+		globalLog.Info("TLS keypair found", "Alias", ke.Alias)
+	}
+
+	// Source hash includes both trusted certs and keypair material so any change in either
+	// source set triggers a re-render. Rendered JKS bytes are not byte-stable across runs
+	// (the keystore library salts/timestamps the output), so we drive idempotency off the
+	// canonical input hash, not the output bytes.
+	hash := computeKeystoreSourceHash(certificates, keypairs)
+
+	if err := r.reconcileSystemConfigMap(ctx, jks, certificates, keypairs, keyStorePassword, hash); err != nil {
+		return ctrl.Result{RequeueAfter: time.Second * 30}, err
+	}
+	if err := r.reconcileSystemSecret(ctx, jks, keyStorePassword); err != nil {
+		return ctrl.Result{RequeueAfter: time.Second * 30}, err
+	}
 
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// SetupWithManager sets up the controller with the Manager. Owns ConfigMap and Secret so
+// in-band edits to outputs (e.g. someone wiping the keystore.jks key) re-trigger Reconcile,
+// and the shared ignoreDeletionPredicate filters status-only updates so we don't spuriously
+// re-render on status writes.
 func (r *JavaKeystoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&jksv1alpha1.JavaKeystore{}).
+		For(&jksv1alpha1.JavaKeystore{}, builder.WithPredicates(ignoreDeletionPredicate())).
+		Owns(&corev1.ConfigMap{}).
+		Owns(&corev1.Secret{}).
+		WithEventFilter(ignoreDeletionPredicate()).
 		Named("javakeystore").
 		Complete(r)
 }

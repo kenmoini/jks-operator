@@ -31,13 +31,21 @@ metadata:
               "app.kubernetes.io/managed-by": "kustomize",
               "app.kubernetes.io/name": "jks-operator"
             },
-            "name": "javakeystore-sample"
+            "name": "javakeystore-sample",
+            "namespace": "default"
           },
-          "spec": null
+          "spec": {
+            "rootCAConfigMaps": [
+              {
+                "key": "ca.crt",
+                "name": "javakeystore-sample-ca"
+              }
+            ]
+          }
         }
       ]
     capabilities: Basic Install
-    createdAt: "2026-05-02T13:25:01Z"
+    createdAt: "2026-05-02T14:10:44Z"
     operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
   name: jks-operator.v0.0.1

@@ -31,4 +31,5 @@ const (
 	DefaultJavaKeystorePasswordSecretKey         = "password"
 	DefaultOwningComponentAnnotationKey          = "jks.kemo.dev/owned-component" // ClusterJavaKeystore or JavaKeystore
 	DefaultOwningInstanceAnnotationKey           = "jks.kemo.dev/owned-instance"  // Name of the owning ClusterJavaKeystore or JavaKeystore instance
+	pemBlockTypeCertificate                      = "CERTIFICATE"
 )

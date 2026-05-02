@@ -24,7 +24,7 @@ The general workflow of the ClusterJavaKeystore follows:
 - With the Root CAs enumerated, will create a ConfigMap and Secret containing the JKS binary data and password in the namespace the operator was installed to.
 - When a ConfigMap or Secret in the cluster is created with the annotation `jks.kemo.dev/clusterkeystore` with a value that matches the name of the ClusterJavaKeystore, the Operator will inject the created JKS into it with the key `keystore.jks` if it is a ConfigMap and the JKS password into the key `password` if it is a labeled Secret.
 
-### JavaKeystore - WIP
+### JavaKeystore
 
 The JavaKeystore operates similarly to the ClusterJavaKeystore, however its referenced and resulting resources are bound to the Namespace that the JavaKeystore is created in.
 
