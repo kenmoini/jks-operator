@@ -54,6 +54,11 @@ func (r *ClusterJavaKeystoreReconciler) SetupWithManager(mgr ctrl.Manager) error
 			handler.EnqueueRequestsFromMapFunc(r.mapConfigMapToClusterJavaKeystore),
 			builder.WithPredicates(clusterKeystoreLabelPredicate()),
 		).
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.mapSecretToClusterJavaKeystore),
+			builder.WithPredicates(clusterKeystoreLabelPredicate()),
+		).
 		Named("clusterjavakeystore").
 		Complete(r)
 }

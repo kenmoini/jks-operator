@@ -117,11 +117,11 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 						globalLog.Error(nil, "Specified key in KeyStorePasswordSecretRef does not exist in Secret, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "MissingKey", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key)
 					}
 				} else {
-					if password, keyExists := passwordSecret.Data["password"]; keyExists {
+					if password, keyExists := passwordSecret.Data[DefaultJavaKeystorePasswordSecretKey]; keyExists {
 						keyStorePassword = string(password)
-						globalLog.Info("Successfully retrieved KeyStore password from Secret specified in KeyStorePasswordSecretRef using default key 'password'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "KeyUsed", "password")
+						globalLog.Info("Successfully retrieved KeyStore password from Secret specified in KeyStorePasswordSecretRef using default password key", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "KeyUsed", DefaultJavaKeystorePasswordSecretKey)
 					} else {
-						globalLog.Error(nil, "Default key 'password' does not exist in Secret specified in KeyStorePasswordSecretRef, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "MissingKey", "password")
+						globalLog.Error(nil, "Default password key does not exist in Secret specified in KeyStorePasswordSecretRef, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "MissingKey", DefaultJavaKeystorePasswordSecretKey)
 					}
 				}
 			}
@@ -341,7 +341,7 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 					},
 				},
 				Data: map[string][]byte{
-					"password": []byte(keyStorePassword),
+					DefaultJavaKeystorePasswordSecretKey: []byte(keyStorePassword),
 				},
 			}
 
@@ -379,6 +379,15 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 			// arbitrary namespaces opt-in by labeling a ConfigMap, the operator populates it.
 			if err := r.injectKeystoreIntoLabeledConfigMaps(ctx, clusterJavaKeystore, certificates, keyStorePassword); err != nil {
 				globalLog.Error(err, "Failed to inject Java Keystore into one or more labeled ConfigMaps; will requeue", "NamespacedName", req.NamespacedName)
+				return ctrl.Result{RequeueAfter: time.Second * 30}, err
+			}
+
+			// =====================================================================================================================================
+			// Inject the keystore password into any Secret labeled `jks.kemo.dev/clusterkeystore=<cr.Name>`.
+			// Same opt-in model as the ConfigMap injector above; consumers can co-locate the keystore
+			// (in a labeled ConfigMap) and its password (in a labeled Secret) inside their own namespace.
+			if err := r.injectPasswordIntoLabeledSecrets(ctx, clusterJavaKeystore, keyStorePassword); err != nil {
+				globalLog.Error(err, "Failed to inject password into one or more labeled Secrets; will requeue", "NamespacedName", req.NamespacedName)
 				return ctrl.Result{RequeueAfter: time.Second * 30}, err
 			}
 		} else {
@@ -596,6 +605,94 @@ func (r *ClusterJavaKeystoreReconciler) injectKeystoreIntoLabeledConfigMaps(
 		}
 		globalLog.Info("Successfully injected Java Keystore into labeled ConfigMap",
 			"ClusterJavaKeystoreName", cr.Name, "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace, "CertHash", wantHash)
+	}
+
+	return utilerrors.NewAggregate(errs)
+}
+
+// injectPasswordIntoLabeledSecrets finds every Secret cluster-wide carrying the
+// `jks.kemo.dev/clusterkeystore=<cr.Name>` label and ensures each one contains the keystore
+// password under `Data["password"]`. Secrets in namespaces that do not match the CR's
+// NamespaceSelector (when set) are skipped.
+//
+// Idempotency: a target whose existing password key already matches the desired value is left
+// untouched. The password is byte-stable (unlike the JKS render output), so a direct comparison
+// is sufficient and no fingerprint annotation is required.
+func (r *ClusterJavaKeystoreReconciler) injectPasswordIntoLabeledSecrets(
+	ctx context.Context,
+	cr *jksv1alpha1.ClusterJavaKeystore,
+	keyStorePassword string,
+) error {
+	var nsSelector labels.Selector
+	if cr.Spec.NamespaceSelector != nil {
+		sel, err := metav1.LabelSelectorAsSelector(cr.Spec.NamespaceSelector)
+		if err != nil {
+			return fmt.Errorf("invalid NamespaceSelector on ClusterJavaKeystore %q: %w", cr.Name, err)
+		}
+		nsSelector = sel
+	}
+
+	sList := &corev1.SecretList{}
+	if err := r.List(ctx, sList, client.MatchingLabels{DefaultClusterJavaKeystoreLabel: cr.Name}); err != nil {
+		return fmt.Errorf("failed to list Secrets labeled %s=%s: %w", DefaultClusterJavaKeystoreLabel, cr.Name, err)
+	}
+
+	if len(sList.Items) == 0 {
+		globalLog.Info("No labeled Secrets found for password injection", "ClusterJavaKeystoreName", cr.Name, "Label", DefaultClusterJavaKeystoreLabel)
+		return nil
+	}
+
+	type nsResult struct {
+		matched bool
+		err     error
+	}
+	nsCache := map[string]nsResult{}
+
+	passwordBytes := []byte(keyStorePassword)
+	var errs []error
+	for i := range sList.Items {
+		s := &sList.Items[i]
+
+		if nsSelector != nil {
+			res, ok := nsCache[s.Namespace]
+			if !ok {
+				ns := &corev1.Namespace{}
+				if err := r.Get(ctx, types.NamespacedName{Name: s.Namespace}, ns); err != nil {
+					res = nsResult{matched: false, err: fmt.Errorf("failed to fetch Namespace %q for selector evaluation: %w", s.Namespace, err)}
+				} else {
+					res = nsResult{matched: nsSelector.Matches(labels.Set(ns.Labels))}
+				}
+				nsCache[s.Namespace] = res
+			}
+			if res.err != nil {
+				errs = append(errs, res.err)
+				continue
+			}
+			if !res.matched {
+				globalLog.Info("Skipping labeled Secret whose namespace does not match the ClusterJavaKeystore NamespaceSelector",
+					"ClusterJavaKeystoreName", cr.Name, "SecretName", s.Name, "SecretNamespace", s.Namespace)
+				continue
+			}
+		}
+
+		// Idempotency: skip if the existing password key already holds the correct value.
+		if existing, ok := s.Data[DefaultJavaKeystorePasswordSecretKey]; ok && bytes.Equal(existing, passwordBytes) {
+			globalLog.Info("Labeled Secret already up to date, skipping injection",
+				"ClusterJavaKeystoreName", cr.Name, "SecretName", s.Name, "SecretNamespace", s.Namespace)
+			continue
+		}
+
+		if s.Data == nil {
+			s.Data = map[string][]byte{}
+		}
+		s.Data[DefaultJavaKeystorePasswordSecretKey] = passwordBytes
+
+		if err := r.Update(ctx, s); err != nil {
+			errs = append(errs, fmt.Errorf("update labeled Secret %s/%s: %w", s.Namespace, s.Name, err))
+			continue
+		}
+		globalLog.Info("Successfully injected password into labeled Secret",
+			"ClusterJavaKeystoreName", cr.Name, "SecretName", s.Name, "SecretNamespace", s.Namespace)
 	}
 
 	return utilerrors.NewAggregate(errs)

@@ -64,6 +64,20 @@ func clusterKeystoreLabelPredicate() predicate.Predicate {
 // `jks.kemo.dev/clusterkeystore` label value. ClusterJavaKeystore is cluster-scoped,
 // so only the Name is set on the request.
 func (r *ClusterJavaKeystoreReconciler) mapConfigMapToClusterJavaKeystore(_ context.Context, obj client.Object) []reconcile.Request {
+	return labelToClusterJavaKeystoreRequest(obj)
+}
+
+// mapSecretToClusterJavaKeystore translates a Secret event into a reconcile request
+// for the ClusterJavaKeystore named by the Secret's `jks.kemo.dev/clusterkeystore` label
+// value. Used for password injection into labeled Secrets across the cluster.
+func (r *ClusterJavaKeystoreReconciler) mapSecretToClusterJavaKeystore(_ context.Context, obj client.Object) []reconcile.Request {
+	return labelToClusterJavaKeystoreRequest(obj)
+}
+
+// labelToClusterJavaKeystoreRequest extracts the cluster-keystore label value from any
+// labeled object and returns a single reconcile request keyed on that name. Returns nil
+// when the object or label is absent/empty.
+func labelToClusterJavaKeystoreRequest(obj client.Object) []reconcile.Request {
 	if obj == nil {
 		return nil
 	}
