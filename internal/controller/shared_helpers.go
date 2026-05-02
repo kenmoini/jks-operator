@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"fmt"
@@ -87,4 +88,22 @@ func determineCommonNameForCertificate(cert *x509.Certificate) string {
 		}
 	}
 	return determinedCommonName
+}
+
+// appendUniqueCertificate returns certificates with certInfo appended, unless a certificate
+// with byte-equal CertificateBytes is already present. Common Names are not unique across
+// certificates, so byte equality is the source of truth. Caller passes log key/value pairs
+// (any number) that will be attached to the skip-log when a duplicate is detected.
+func appendUniqueCertificate(certificates []CertificateNameMapping, certInfo CertificateNameMapping, logKVs ...any) []CertificateNameMapping {
+	for _, existing := range certificates {
+		if bytes.Equal(existing.CertificateBytes, certInfo.CertificateBytes) {
+			args := append([]any{
+				"ExistingCertificateCommonName", existing.CommonName,
+				"CurrentCertificateCommonName", certInfo.CommonName,
+			}, logKVs...)
+			globalLog.Info("Certificate with identical bytes already exists, skipping to avoid duplicates in Java Keystore", args...)
+			return certificates
+		}
+	}
+	return append(certificates, certInfo)
 }
