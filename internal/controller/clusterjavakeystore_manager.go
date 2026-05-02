@@ -19,20 +19,24 @@ package controller
 import (
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	jksv1alpha1 "github.com/kenmoini/jks-operator/api/v1alpha1"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
+// ignoreDeletionPredicate filters out CR status-only updates (no Generation change)
+// and confirmed-deletion delete events for the ClusterJavaKeystore CR. It is intentionally
+// scoped to the For() resource only — ConfigMaps do not bump Generation on data/label
+// changes, so applying this filter to ConfigMap watches would silently drop relevant events.
 func ignoreDeletionPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			// Ignore updates to CR status in which case metadata.Generation does not change
 			return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			// Evaluates to false if the object has been confirmed deleted.
 			return !e.DeleteStateUnknown
 		},
 	}
@@ -41,10 +45,15 @@ func ignoreDeletionPredicate() predicate.Predicate {
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterJavaKeystoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&jksv1alpha1.ClusterJavaKeystore{}).
+		For(&jksv1alpha1.ClusterJavaKeystore{}, builder.WithPredicates(ignoreDeletionPredicate())).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		WithEventFilter(ignoreDeletionPredicate()).
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapConfigMapToClusterJavaKeystore),
+			builder.WithPredicates(clusterKeystoreLabelPredicate()),
+		).
 		Named("clusterjavakeystore").
 		Complete(r)
 }

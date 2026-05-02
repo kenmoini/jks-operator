@@ -19,20 +19,25 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"time"
 
 	jksv1alpha1 "github.com/kenmoini/jks-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -268,26 +273,19 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 		// =====================================================================================================================================
 		// If we have detected valid certificates, continue to creating the JKS and Secret/ConfigMap
 		if len(certificates) > 0 {
-			// Create a new Keystore object
-			ks, err := createJavaKeystore()
-			if err != nil {
-				globalLog.Error(err, "Failed to create Java Keystore object")
-				return ctrl.Result{RequeueAfter: time.Second * 30}, err
-			}
-
-			// =====================================================================================================================================
-			// Loop through the enumerated certificates and log their Common Names and Expiration Dates
+			// Log the enumerated certificates for visibility before keystore assembly.
 			for _, certInfo := range certificates {
 				globalLog.Info("Certificate found", "CommonName", certInfo.CommonName, "ExpirationDate", certInfo.ExpirationDate)
-				// Create TCE
-				aliase, tce := createTrustedCertificateEntry(certInfo)
-				// Add the TCE to the Keystore
-				if err := ks.SetTrustedCertificateEntry(aliase, tce); err != nil {
-					globalLog.Error(err, "Failed to add Trusted Certificate Entry to Java Keystore", "CertificateCommonName", certInfo.CommonName)
-				} else {
-					globalLog.Info("Successfully added Trusted Certificate Entry to Java Keystore", "CertificateCommonName", certInfo.CommonName)
-				}
 			}
+
+			// Build the keystore once for the system ConfigMap. The same source certificates and password
+			// will be reused when injecting into labeled target ConfigMaps below.
+			jksBytes, err := renderKeystoreBytes(certificates, keyStorePassword)
+			if err != nil {
+				globalLog.Error(err, "Failed to render Java Keystore bytes", "NamespacedName", req.NamespacedName)
+				return ctrl.Result{RequeueAfter: time.Second * 30}, err
+			}
+			globalLog.Info("Successfully rendered Java Keystore bytes", "NamespacedName", req.NamespacedName)
 
 			// Create a ConfigMap in the system namespace with binaryData to store the JKS
 			generatedConfigMap := &corev1.ConfigMap{
@@ -298,21 +296,10 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 						*metav1.NewControllerRef(clusterJavaKeystore, jksv1alpha1.GroupVersion.WithKind("ClusterJavaKeystore")),
 					},
 				},
-				BinaryData: map[string][]byte{},
+				BinaryData: map[string][]byte{
+					DefaultJavaKeystoreConfigMapKey: jksBytes,
+				},
 			}
-
-			// Store the JKS in a buffer and then set the buffer bytes to the BinaryData of the ConfigMap
-			// We have to store it in a buffer first because the keystore library writes the JKS to an io.Writer and does not return the bytes directly, so we use a bytes.Buffer as the io.Writer to capture the bytes of the generated JKS.
-			var jksBuffer bytes.Buffer
-			if err := ks.Store(&jksBuffer, []byte(keyStorePassword)); err != nil {
-				globalLog.Error(err, "Failed to store Java Keystore to buffer", "NamespacedName", req.NamespacedName)
-				return ctrl.Result{RequeueAfter: time.Second * 30}, err
-			} else {
-				globalLog.Info("Successfully stored Java Keystore to buffer", "NamespacedName", req.NamespacedName)
-			}
-
-			// Set the bytes of the generated JKS to the BinaryData of the ConfigMap under the key "keystore.jks" by default
-			generatedConfigMap.BinaryData[DefaultJavaKeystoreConfigMapKey] = jksBuffer.Bytes()
 
 			// Check if the ConfigMap already exists
 			existingConfigMap := &corev1.ConfigMap{}
@@ -384,6 +371,15 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 				} else {
 					globalLog.Info("Secret to store Java Keystore password already exists and is up to date, no update needed", "NamespacedName", req.NamespacedName, "SecretName", existingSecret.Name, "SecretNamespace", existingSecret.Namespace)
 				}
+			}
+
+			// =====================================================================================================================================
+			// Inject the generated JKS into any ConfigMap labeled `jks.kemo.dev/clusterkeystore=<cr.Name>`.
+			// This mirrors the OpenShift Cluster Network Operator's CA injector pattern: consumers in
+			// arbitrary namespaces opt-in by labeling a ConfigMap, the operator populates it.
+			if err := r.injectKeystoreIntoLabeledConfigMaps(ctx, clusterJavaKeystore, certificates, keyStorePassword); err != nil {
+				globalLog.Error(err, "Failed to inject Java Keystore into one or more labeled ConfigMaps; will requeue", "NamespacedName", req.NamespacedName)
+				return ctrl.Result{RequeueAfter: time.Second * 30}, err
 			}
 		} else {
 			globalLog.Info("No certificates found in any of the referenced ConfigMaps", "NamespacedName", req.NamespacedName)
@@ -474,4 +470,133 @@ func (r *ClusterJavaKeystoreReconciler) validateAndExtractCertificatesFromConfig
 	}
 
 	return certificates, nil
+}
+
+// computeCertSetHash returns a stable SHA-256 (hex-encoded) over the source certificate bytes,
+// independent of the input order. This is used as an idempotency marker on labeled target
+// ConfigMaps because rendered JKS bytes are not byte-stable across runs (the underlying
+// keystore library salts/timestamps the output, so a byte-for-byte comparison would always
+// show a difference even when the set of certificates is unchanged).
+func computeCertSetHash(certificates []CertificateNameMapping) string {
+	sorted := make([][]byte, len(certificates))
+	for i, c := range certificates {
+		// copy so we don't mutate the caller's backing array via sort
+		b := make([]byte, len(c.CertificateBytes))
+		copy(b, c.CertificateBytes)
+		sorted[i] = b
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return bytes.Compare(sorted[i], sorted[j]) < 0
+	})
+	h := sha256.New()
+	for _, b := range sorted {
+		h.Write(b)
+		h.Write([]byte{0}) // delimiter so adjacent certs can't collide via concatenation
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// injectKeystoreIntoLabeledConfigMaps finds every ConfigMap cluster-wide carrying the
+// `jks.kemo.dev/clusterkeystore=<cr.Name>` label and ensures each one contains the rendered
+// keystore under `BinaryData["keystore.jks"]` plus a `jks.kemo.dev/cert-hash` annotation that
+// fingerprints the source-cert set. ConfigMaps in namespaces that do not match the CR's
+// NamespaceSelector (when set) are skipped.
+//
+// Idempotency: a target whose existing annotation matches the current cert-set hash AND has a
+// non-empty keystore key is left untouched, so reconciler-driven updates do not feed back into
+// further reconciles.
+func (r *ClusterJavaKeystoreReconciler) injectKeystoreIntoLabeledConfigMaps(
+	ctx context.Context,
+	cr *jksv1alpha1.ClusterJavaKeystore,
+	certificates []CertificateNameMapping,
+	keyStorePassword string,
+) error {
+	wantHash := computeCertSetHash(certificates)
+
+	// Compile the optional NamespaceSelector once.
+	var nsSelector labels.Selector
+	if cr.Spec.NamespaceSelector != nil {
+		sel, err := metav1.LabelSelectorAsSelector(cr.Spec.NamespaceSelector)
+		if err != nil {
+			return fmt.Errorf("invalid NamespaceSelector on ClusterJavaKeystore %q: %w", cr.Name, err)
+		}
+		nsSelector = sel
+	}
+
+	cmList := &corev1.ConfigMapList{}
+	if err := r.List(ctx, cmList, client.MatchingLabels{DefaultClusterJavaKeystoreLabel: cr.Name}); err != nil {
+		return fmt.Errorf("failed to list ConfigMaps labeled %s=%s: %w", DefaultClusterJavaKeystoreLabel, cr.Name, err)
+	}
+
+	if len(cmList.Items) == 0 {
+		globalLog.Info("No labeled ConfigMaps found for injection", "ClusterJavaKeystoreName", cr.Name, "Label", DefaultClusterJavaKeystoreLabel)
+		return nil
+	}
+
+	// Cache namespace lookups so we don't refetch the same Namespace object for multiple
+	// ConfigMaps in the same namespace.
+	type nsResult struct {
+		matched bool
+		err     error
+	}
+	nsCache := map[string]nsResult{}
+
+	var errs []error
+	for i := range cmList.Items {
+		cm := &cmList.Items[i]
+
+		if nsSelector != nil {
+			res, ok := nsCache[cm.Namespace]
+			if !ok {
+				ns := &corev1.Namespace{}
+				if err := r.Get(ctx, types.NamespacedName{Name: cm.Namespace}, ns); err != nil {
+					res = nsResult{matched: false, err: fmt.Errorf("failed to fetch Namespace %q for selector evaluation: %w", cm.Namespace, err)}
+				} else {
+					res = nsResult{matched: nsSelector.Matches(labels.Set(ns.Labels))}
+				}
+				nsCache[cm.Namespace] = res
+			}
+			if res.err != nil {
+				errs = append(errs, res.err)
+				continue
+			}
+			if !res.matched {
+				globalLog.Info("Skipping labeled ConfigMap whose namespace does not match the ClusterJavaKeystore NamespaceSelector",
+					"ClusterJavaKeystoreName", cr.Name, "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace)
+				continue
+			}
+		}
+
+		// Idempotency short-circuit.
+		if cm.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] == wantHash && len(cm.BinaryData[DefaultJavaKeystoreConfigMapKey]) > 0 {
+			globalLog.Info("Labeled ConfigMap already up to date, skipping injection",
+				"ClusterJavaKeystoreName", cr.Name, "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace)
+			continue
+		}
+
+		jksBytes, err := renderKeystoreBytes(certificates, keyStorePassword)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("render keystore for %s/%s: %w", cm.Namespace, cm.Name, err))
+			continue
+		}
+
+		if cm.BinaryData == nil {
+			cm.BinaryData = map[string][]byte{}
+		}
+		cm.BinaryData[DefaultJavaKeystoreConfigMapKey] = jksBytes
+
+		if cm.Annotations == nil {
+			cm.Annotations = map[string]string{}
+		}
+		cm.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] = wantHash
+
+		if err := r.Update(ctx, cm); err != nil {
+			errs = append(errs, fmt.Errorf("update labeled ConfigMap %s/%s: %w", cm.Namespace, cm.Name, err))
+			continue
+		}
+		globalLog.Info("Successfully injected Java Keystore into labeled ConfigMap",
+			"ClusterJavaKeystoreName", cr.Name, "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace, "CertHash", wantHash)
+	}
+
+	return utilerrors.NewAggregate(errs)
 }

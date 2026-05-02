@@ -43,8 +43,6 @@ type ClusterJavaKeystoreSpec struct {
 
 	// SystemNamespace is the namespace the operator is running in and where the Java Keystore ConfigMap and Secret will be created.  If left absent, it will default to "jks-operator".
 	SystemNamespace string `json:"systemNamespace,omitempty"`
-
-	// TargetConfigMap
 }
 
 // ConfigMapReference defines a reference to a ConfigMap that contains a Certificate.
