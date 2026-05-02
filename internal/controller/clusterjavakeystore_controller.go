@@ -46,6 +46,27 @@ type ClusterJavaKeystoreReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+func (r *ClusterJavaKeystoreReconciler) getSystemNamespace(clusterJavaKeystore *jksv1alpha1.ClusterJavaKeystore, ctx context.Context, req ctrl.Request) (string, error) { // =====================================================================================================================================
+	// Check to see if the SystemNamespace is set, if not we will default it to "jks-operator", and if it exists
+	// we will log the value for visibility since that is where the Java Keystore ConfigMap and Secret will be created
+	if clusterJavaKeystore.Spec.SystemNamespace == "" {
+		clusterJavaKeystore.Spec.SystemNamespace = DefaultOperatorNamespace
+		globalLog.Info("SystemNamespace not set in ClusterJavaKeystore spec, defaulting to '"+DefaultOperatorNamespace+"'", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+	} else {
+		globalLog.Info("SystemNamespace is set in ClusterJavaKeystore spec", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+	}
+
+	// Check if the namespace exists, if not error out
+	namespace := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: clusterJavaKeystore.Spec.SystemNamespace}, namespace); err != nil {
+		globalLog.Error(err, "Failed to fetch SystemNamespace", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+		return "", client.IgnoreNotFound(err)
+	} else {
+		globalLog.Info("Successfully fetched SystemNamespace specified in ClusterJavaKeystore spec", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+	}
+	return clusterJavaKeystore.Spec.SystemNamespace, nil
+}
+
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=clusterjavakeystores,verbs=get;list;watch;create;update;patch;delete
@@ -78,23 +99,11 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 	} else {
 		globalLog.Info("Successfully fetched ClusterJavaKeystore", "NamespacedName", req.NamespacedName)
 
-		// =====================================================================================================================================
-		// Check to see if the SystemNamespace is set, if not we will default it to "jks-operator", and if it exists
-		// we will log the value for visibility since that is where the Java Keystore ConfigMap and Secret will be created
-		if clusterJavaKeystore.Spec.SystemNamespace == "" {
-			clusterJavaKeystore.Spec.SystemNamespace = DefaultOperatorNamespace
-			globalLog.Info("SystemNamespace not set in ClusterJavaKeystore spec, defaulting to '"+DefaultOperatorNamespace+"'", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
-		} else {
-			globalLog.Info("SystemNamespace is set in ClusterJavaKeystore spec", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
-		}
-
-		// Check if the namespace exists, if not error out
-		namespace := &corev1.Namespace{}
-		if err := r.Get(ctx, types.NamespacedName{Name: clusterJavaKeystore.Spec.SystemNamespace}, namespace); err != nil {
-			globalLog.Error(err, "Failed to fetch SystemNamespace", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
-			return ctrl.Result{RequeueAfter: time.Second * 30}, client.IgnoreNotFound(err)
-		} else {
-			globalLog.Info("Successfully fetched SystemNamespace specified in ClusterJavaKeystore spec", "NamespacedName", req.NamespacedName, "SystemNamespace", clusterJavaKeystore.Spec.SystemNamespace)
+		// Next, determine the system namespace
+		systemNamespace, err := r.getSystemNamespace(clusterJavaKeystore, ctx, req)
+		if err != nil {
+			globalLog.Error(err, "Failed to determine SystemNamespace for ClusterJavaKeystore", "NamespacedName", req.NamespacedName)
+			return ctrl.Result{RequeueAfter: time.Second * 30}, err
 		}
 
 		// =====================================================================================================================================
@@ -285,7 +294,7 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 			wantHash := computeCertSetHash(certificates)
 			systemCMName := types.NamespacedName{
 				Name:      clusterJavaKeystore.Name + "-jks",
-				Namespace: clusterJavaKeystore.Spec.SystemNamespace,
+				Namespace: systemNamespace,
 			}
 
 			existingConfigMap := &corev1.ConfigMap{}
@@ -350,7 +359,7 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 			generatedSecret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      clusterJavaKeystore.Name + "-jks-password",
-					Namespace: clusterJavaKeystore.Spec.SystemNamespace,
+					Namespace: systemNamespace,
 					OwnerReferences: []metav1.OwnerReference{
 						*metav1.NewControllerRef(clusterJavaKeystore, jksv1alpha1.GroupVersion.WithKind("ClusterJavaKeystore")),
 					},

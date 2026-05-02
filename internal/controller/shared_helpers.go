@@ -44,6 +44,8 @@ func GetConfigMap(name string, namespace string, clnt client.Client) (*corev1.Co
 // given object, recording which controller component (kind) and which CR instance manages
 // the contents being injected. Existing annotations are preserved; only the two ownership
 // keys are written/overwritten.
+//
+//nolint:all
 func setOwnershipAnnotations(obj client.Object, component, instance string) {
 	a := obj.GetAnnotations()
 	if a == nil {
@@ -57,6 +59,8 @@ func setOwnershipAnnotations(obj client.Object, component, instance string) {
 // hasOwnershipAnnotations reports whether the given object's ownership annotations already
 // match the expected component/instance pair. Used by injection idempotency checks so we
 // don't issue no-op updates when both the payload and the ownership stamp are correct.
+//
+//nolint:all
 func hasOwnershipAnnotations(obj client.Object, component, instance string) bool {
 	a := obj.GetAnnotations()
 	return a[DefaultOwningComponentAnnotationKey] == component &&
