@@ -7,9 +7,9 @@ import (
 	"github.com/pavlo-v-chernykh/keystore-go/v4"
 )
 
-func createJavaKeystore() (keystore.KeyStore, error) {
+func createJavaKeystore() keystore.KeyStore {
 	ks := keystore.New()
-	return ks, nil
+	return ks
 }
 
 func createTrustedCertificateEntry(certInfo CertificateNameMapping) (string, keystore.TrustedCertificateEntry) {
@@ -27,10 +27,7 @@ func createTrustedCertificateEntry(certInfo CertificateNameMapping) (string, key
 // but do not abort the overall render — this preserves the prior behavior of the Reconcile flow,
 // which logged and continued past SetTrustedCertificateEntry failures.
 func renderKeystoreBytes(certificates []CertificateNameMapping, password string) ([]byte, error) {
-	ks, err := createJavaKeystore()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Java Keystore: %w", err)
-	}
+	ks := createJavaKeystore()
 
 	for _, certInfo := range certificates {
 		alias, tce := createTrustedCertificateEntry(certInfo)
