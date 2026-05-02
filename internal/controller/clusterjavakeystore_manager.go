@@ -21,16 +21,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	jksv1alpha1 "github.com/kenmoini/jks-operator/api/v1alpha1"
 )
 
 // ignoreDeletionPredicate filters out CR status-only updates (no Generation change)
-// and confirmed-deletion delete events for the ClusterJavaKeystore CR. It is intentionally
-// scoped to the For() resource only — ConfigMaps do not bump Generation on data/label
-// changes, so applying this filter to ConfigMap watches would silently drop relevant events.
+// and confirmed-deletion delete events for the ClusterJavaKeystore CR.
 func ignoreDeletionPredicate() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -42,23 +39,17 @@ func ignoreDeletionPredicate() predicate.Predicate {
 	}
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// SetupWithManager sets up the CR controller with the Manager. This controller is
+// responsible for the ClusterJavaKeystore CR and the system ConfigMap/Secret it owns.
+// Labeled-target injection lives in separate controllers (configmap_injector and
+// secret_injector) so a label or data edit on a single labeled target only triggers a
+// scoped per-target reconcile, never a full CR re-derivation.
 func (r *ClusterJavaKeystoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&jksv1alpha1.ClusterJavaKeystore{}, builder.WithPredicates(ignoreDeletionPredicate())).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
 		WithEventFilter(ignoreDeletionPredicate()).
-		Watches(
-			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(r.mapConfigMapToClusterJavaKeystore),
-			builder.WithPredicates(clusterKeystoreLabelPredicate()),
-		).
-		Watches(
-			&corev1.Secret{},
-			handler.EnqueueRequestsFromMapFunc(r.mapSecretToClusterJavaKeystore),
-			builder.WithPredicates(clusterKeystoreLabelPredicate()),
-		).
 		Named("clusterjavakeystore").
 		Complete(r)
 }

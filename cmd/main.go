@@ -209,6 +209,20 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterJavaKeystore")
 		os.Exit(1)
 	}
+	if err := (&controller.ClusterJavaKeystoreConfigMapInjectorReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterJavaKeystoreConfigMapInjector")
+		os.Exit(1)
+	}
+	if err := (&controller.ClusterJavaKeystoreSecretInjectorReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterJavaKeystoreSecretInjector")
+		os.Exit(1)
+	}
 	if err := (&controller.JavaKeystoreReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

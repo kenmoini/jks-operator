@@ -5,3 +5,5 @@ import (
 )
 
 var globalLog = logf.Log
+var secretInjectorLog = logf.Log.WithName("jks-operator-cjks-secret-injector")
+var configMapInjectorLog = logf.Log.WithName("jks-operator-cjks-configmap-injector")
