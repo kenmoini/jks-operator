@@ -40,6 +40,29 @@ func GetConfigMap(name string, namespace string, clnt client.Client) (*corev1.Co
 	return targetConfigMap, nil
 }
 
+// setOwnershipAnnotations stamps the standard JKS-operator ownership annotations on the
+// given object, recording which controller component (kind) and which CR instance manages
+// the contents being injected. Existing annotations are preserved; only the two ownership
+// keys are written/overwritten.
+func setOwnershipAnnotations(obj client.Object, component, instance string) {
+	a := obj.GetAnnotations()
+	if a == nil {
+		a = map[string]string{}
+	}
+	a[DefaultOwningComponentAnnotationKey] = component
+	a[DefaultOwningInstanceAnnotationKey] = instance
+	obj.SetAnnotations(a)
+}
+
+// hasOwnershipAnnotations reports whether the given object's ownership annotations already
+// match the expected component/instance pair. Used by injection idempotency checks so we
+// don't issue no-op updates when both the payload and the ownership stamp are correct.
+func hasOwnershipAnnotations(obj client.Object, component, instance string) bool {
+	a := obj.GetAnnotations()
+	return a[DefaultOwningComponentAnnotationKey] == component &&
+		a[DefaultOwningInstanceAnnotationKey] == instance
+}
+
 // determineCommonNameForCertificate is a helper function to determine the Common Name to use for a certificate based on the Subject field of the certificate.
 // Since some certificates may not have a Common Name in the Subject, we will attempt to determine the best Common Name to use based on the available fields in the Subject.
 // The order of precedence is Common Name, Organizational Unit, Organization, and if none of those fields are available, we will generate a unique Common Name using a timestamp to ensure it is unique among any other certificates that also do not have any of those fields available. This is important because we want to use the Common Name as part of the alias for the certificate in the Java Keystore and aliases must be unique within a Keystore.

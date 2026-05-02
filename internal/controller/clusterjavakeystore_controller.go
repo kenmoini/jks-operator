@@ -300,6 +300,7 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 					DefaultJavaKeystoreConfigMapKey: jksBytes,
 				},
 			}
+			setOwnershipAnnotations(generatedConfigMap, "ClusterJavaKeystore", clusterJavaKeystore.Name)
 
 			// Check if the ConfigMap already exists
 			existingConfigMap := &corev1.ConfigMap{}
@@ -316,10 +317,12 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 				globalLog.Error(err, "Failed to fetch existing ConfigMap to store generated Java Keystore", "NamespacedName", req.NamespacedName, "ConfigMapName", generatedConfigMap.Name, "ConfigMapNamespace", generatedConfigMap.Namespace)
 				return ctrl.Result{RequeueAfter: time.Second * 30}, err
 			} else {
-				// Check if the existing ConfigMap's BinaryData is different from the generated ConfigMap's BinaryData, and if so, update it
+				// Check if the existing ConfigMap's BinaryData is different from the generated ConfigMap's BinaryData OR if the ownership annotations are missing/wrong, and if so, update it
 				// TODO/NOTE: Tecnically this comparison will always show a difference because of how the JKS is generated with a password, the hash will always be different thus creating a different byte array even if the certificates included are the same.
-				if !reflect.DeepEqual(existingConfigMap.BinaryData, generatedConfigMap.BinaryData) {
+				ownershipNeedsUpdate := !hasOwnershipAnnotations(existingConfigMap, "ClusterJavaKeystore", clusterJavaKeystore.Name)
+				if !reflect.DeepEqual(existingConfigMap.BinaryData, generatedConfigMap.BinaryData) || ownershipNeedsUpdate {
 					existingConfigMap.BinaryData = generatedConfigMap.BinaryData
+					setOwnershipAnnotations(existingConfigMap, "ClusterJavaKeystore", clusterJavaKeystore.Name)
 					if err := r.Update(ctx, existingConfigMap); err != nil {
 						globalLog.Error(err, "Failed to update ConfigMap to store generated Java Keystore", "NamespacedName", req.NamespacedName, "ConfigMapName", existingConfigMap.Name, "ConfigMapNamespace", existingConfigMap.Namespace)
 						return ctrl.Result{RequeueAfter: time.Second * 30}, err
@@ -344,6 +347,7 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 					DefaultJavaKeystorePasswordSecretKey: []byte(keyStorePassword),
 				},
 			}
+			setOwnershipAnnotations(generatedSecret, "ClusterJavaKeystore", clusterJavaKeystore.Name)
 
 			existingSecret := &corev1.Secret{}
 			err = r.Get(ctx, types.NamespacedName{Name: generatedSecret.Name, Namespace: generatedSecret.Namespace}, existingSecret)
@@ -359,9 +363,11 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 				globalLog.Error(err, "Failed to fetch existing Secret to store Java Keystore password", "NamespacedName", req.NamespacedName, "SecretName", generatedSecret.Name, "SecretNamespace", generatedSecret.Namespace)
 				return ctrl.Result{RequeueAfter: time.Second * 30}, err
 			} else {
-				// Check if the existing Secret's Data is different from the generated Secret's Data, and if so, update it
-				if !reflect.DeepEqual(existingSecret.Data, generatedSecret.Data) {
+				// Check if the existing Secret's Data differs OR ownership annotations are missing/wrong, and if so, update it
+				ownershipNeedsUpdate := !hasOwnershipAnnotations(existingSecret, "ClusterJavaKeystore", clusterJavaKeystore.Name)
+				if !reflect.DeepEqual(existingSecret.Data, generatedSecret.Data) || ownershipNeedsUpdate {
 					existingSecret.Data = generatedSecret.Data
+					setOwnershipAnnotations(existingSecret, "ClusterJavaKeystore", clusterJavaKeystore.Name)
 					if err := r.Update(ctx, existingSecret); err != nil {
 						globalLog.Error(err, "Failed to update Secret to store Java Keystore password", "NamespacedName", req.NamespacedName, "SecretName", existingSecret.Name, "SecretNamespace", existingSecret.Namespace)
 						return ctrl.Result{RequeueAfter: time.Second * 30}, err
@@ -576,8 +582,13 @@ func (r *ClusterJavaKeystoreReconciler) injectKeystoreIntoLabeledConfigMaps(
 			}
 		}
 
-		// Idempotency short-circuit.
-		if cm.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] == wantHash && len(cm.BinaryData[DefaultJavaKeystoreConfigMapKey]) > 0 {
+		// Idempotency short-circuit. We require all of: matching cert-hash annotation, a non-empty
+		// keystore key, and the ownership annotations already pointing at this CR. Including the
+		// ownership stamp here means existing labeled ConfigMaps that pre-date this annotation
+		// scheme get back-filled on the next reconcile rather than waiting for a cert change.
+		if cm.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] == wantHash &&
+			len(cm.BinaryData[DefaultJavaKeystoreConfigMapKey]) > 0 &&
+			hasOwnershipAnnotations(cm, "ClusterJavaKeystore", cr.Name) {
 			globalLog.Info("Labeled ConfigMap already up to date, skipping injection",
 				"ClusterJavaKeystoreName", cr.Name, "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace)
 			continue
@@ -594,9 +605,7 @@ func (r *ClusterJavaKeystoreReconciler) injectKeystoreIntoLabeledConfigMaps(
 		}
 		cm.BinaryData[DefaultJavaKeystoreConfigMapKey] = jksBytes
 
-		if cm.Annotations == nil {
-			cm.Annotations = map[string]string{}
-		}
+		setOwnershipAnnotations(cm, "ClusterJavaKeystore", cr.Name)
 		cm.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] = wantHash
 
 		if err := r.Update(ctx, cm); err != nil {
@@ -675,8 +684,12 @@ func (r *ClusterJavaKeystoreReconciler) injectPasswordIntoLabeledSecrets(
 			}
 		}
 
-		// Idempotency: skip if the existing password key already holds the correct value.
-		if existing, ok := s.Data[DefaultJavaKeystorePasswordSecretKey]; ok && bytes.Equal(existing, passwordBytes) {
+		// Idempotency: skip only when both the password value and the ownership annotations are
+		// already correct. This back-fills annotations on existing Secrets that pre-date this
+		// scheme even if the password itself hasn't changed.
+		if existing, ok := s.Data[DefaultJavaKeystorePasswordSecretKey]; ok &&
+			bytes.Equal(existing, passwordBytes) &&
+			hasOwnershipAnnotations(s, "ClusterJavaKeystore", cr.Name) {
 			globalLog.Info("Labeled Secret already up to date, skipping injection",
 				"ClusterJavaKeystoreName", cr.Name, "SecretName", s.Name, "SecretNamespace", s.Namespace)
 			continue
@@ -686,6 +699,7 @@ func (r *ClusterJavaKeystoreReconciler) injectPasswordIntoLabeledSecrets(
 			s.Data = map[string][]byte{}
 		}
 		s.Data[DefaultJavaKeystorePasswordSecretKey] = passwordBytes
+		setOwnershipAnnotations(s, "ClusterJavaKeystore", cr.Name)
 
 		if err := r.Update(ctx, s); err != nil {
 			errs = append(errs, fmt.Errorf("update labeled Secret %s/%s: %w", s.Namespace, s.Name, err))
