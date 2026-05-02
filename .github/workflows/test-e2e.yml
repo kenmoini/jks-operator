@@ -2,7 +2,11 @@ name: E2E Tests
 
 on:
   push:
+    branches:
+      - mainstream
   pull_request:
+    branches:
+      - mainstream
 
 jobs:
   test-e2e:
@@ -28,14 +32,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          # list of Docker images to use as base name for tags
-          images: |
-            example.com/jks-operator
 
       - name: Clone the code
         uses: actions/checkout@v6
