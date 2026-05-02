@@ -24,7 +24,6 @@ import (
 
 // JavaKeystoreSpec defines the desired state of JavaKeystore.
 type JavaKeystoreSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// RootCAConfigMaps is a list of ConfigMaps that contain Root CA Certificates.
