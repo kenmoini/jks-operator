@@ -309,6 +309,9 @@ OPERATOR_SDK = $(shell which operator-sdk)
 endif
 endif
 
+.PHONY: release
+release: generate manifests bundle ## Generate bundle manifests and metadata, then validate generated files.
+
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
