@@ -18,11 +18,11 @@ package controller
 
 // This file contains default values for the Java Keystore Operator.
 const (
-	DefaultCACertificatesPath            = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
-	DefaultAddDefaultCACertificates      = false
-	DefaultJavaKeystorePassword          = "changeit"
-	DefaultClusterJavaKeystoreAnnotation = "jks.kemo.dev/clusterkeystore"
-	DefaultJavaKeystoreAnnotation        = "jks.kemo.dev/keystore"
-	DefaultOperatorNamespace             = "jks-operator"
-	DefaultJavaKeystoreConfigMapKey      = "keystore.jks"
+	DefaultCACertificatesPath       = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+	DefaultAddDefaultCACertificates = false
+	DefaultJavaKeystorePassword     = "changeit"
+	DefaultClusterJavaKeystoreLabel = "jks.kemo.dev/clusterkeystore"
+	DefaultJavaKeystoreLabel        = "jks.kemo.dev/keystore"
+	DefaultOperatorNamespace        = "jks-operator"
+	DefaultJavaKeystoreConfigMapKey = "keystore.jks"
 )
