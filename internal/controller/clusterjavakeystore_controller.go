@@ -67,6 +67,35 @@ func (r *ClusterJavaKeystoreReconciler) getSystemNamespace(clusterJavaKeystore *
 	return clusterJavaKeystore.Spec.SystemNamespace, nil
 }
 
+// resolveKeystorePassword returns the password to use for the generated Java Keystore.
+// Precedence: KeyStorePasswordSecretRef[Key] > KeyStorePasswordSecretRef[DefaultJavaKeystorePasswordSecretKey] > DefaultJavaKeystorePassword.
+// Any failure to resolve (ref unset, secret fetch error, key missing) falls back to
+// DefaultJavaKeystorePassword and logs the cause.
+func (r *ClusterJavaKeystoreReconciler) resolveKeystorePassword(cjks *jksv1alpha1.ClusterJavaKeystore, req ctrl.Request) string {
+	ref := cjks.Spec.KeyStorePasswordSecretRef
+	if ref.Name == "" || ref.Namespace == "" {
+		globalLog.Info("KeyStorePasswordSecretRef is not set in ClusterJavaKeystore spec, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName)
+		return DefaultJavaKeystorePassword
+	}
+	globalLog.Info("KeyStorePasswordSecretRef is set in ClusterJavaKeystore spec, attempting to fetch Secret for KeyStore password", "NamespacedName", req.NamespacedName, "SecretName", ref.Name, "SecretNamespace", ref.Namespace)
+	secret, err := GetSecret(ref.Name, ref.Namespace, r.Client)
+	if err != nil {
+		globalLog.Error(err, "Failed to fetch Secret specified in KeyStorePasswordSecretRef for KeyStore password, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", ref.Name, "SecretNamespace", ref.Namespace)
+		return DefaultJavaKeystorePassword
+	}
+	key := ref.Key
+	if key == "" {
+		key = DefaultJavaKeystorePasswordSecretKey
+	}
+	password, ok := secret.Data[key]
+	if !ok {
+		globalLog.Error(nil, "Specified key in KeyStorePasswordSecretRef does not exist in Secret, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", ref.Name, "SecretNamespace", ref.Namespace, "MissingKey", key)
+		return DefaultJavaKeystorePassword
+	}
+	globalLog.Info("Successfully retrieved KeyStore password from Secret specified in KeyStorePasswordSecretRef", "NamespacedName", req.NamespacedName, "SecretName", ref.Name, "SecretNamespace", ref.Namespace, "KeyUsed", key)
+	return string(password)
+}
+
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=clusterjavakeystores,verbs=get;list;watch;create;update;patch;delete
@@ -99,6 +128,7 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 	} else {
 		globalLog.Info("Successfully fetched ClusterJavaKeystore", "NamespacedName", req.NamespacedName)
 
+		// =====================================================================================================================================
 		// Next, determine the system namespace
 		systemNamespace, err := r.getSystemNamespace(clusterJavaKeystore, ctx, req)
 		if err != nil {
@@ -107,34 +137,7 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 
 		// =====================================================================================================================================
-		// Check if the KeyStorePasswordSecretRef is set, if so grab the Secret, if not set it to a default of "changeit"
-		keyStorePassword := DefaultJavaKeystorePassword
-		if clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name != "" && clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace != "" {
-			globalLog.Info("KeyStorePasswordSecretRef is set in ClusterJavaKeystore spec, attempting to fetch Secret for KeyStore password", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace)
-			passwordSecret, err := GetSecret(clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, r.Client)
-			if err != nil {
-				globalLog.Error(err, "Failed to fetch Secret specified in KeyStorePasswordSecretRef for KeyStore password, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace)
-			} else {
-				globalLog.Info("Successfully fetched Secret specified in KeyStorePasswordSecretRef for KeyStore password", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace)
-				if clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key != "" {
-					if password, keyExists := passwordSecret.Data[clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key]; keyExists {
-						keyStorePassword = string(password)
-						globalLog.Info("Successfully retrieved KeyStore password from Secret specified in KeyStorePasswordSecretRef", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "KeyUsed", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key)
-					} else {
-						globalLog.Error(nil, "Specified key in KeyStorePasswordSecretRef does not exist in Secret, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "MissingKey", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Key)
-					}
-				} else {
-					if password, keyExists := passwordSecret.Data[DefaultJavaKeystorePasswordSecretKey]; keyExists {
-						keyStorePassword = string(password)
-						globalLog.Info("Successfully retrieved KeyStore password from Secret specified in KeyStorePasswordSecretRef using default password key", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "KeyUsed", DefaultJavaKeystorePasswordSecretKey)
-					} else {
-						globalLog.Error(nil, "Default password key does not exist in Secret specified in KeyStorePasswordSecretRef, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName, "SecretName", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Name, "SecretNamespace", clusterJavaKeystore.Spec.KeyStorePasswordSecretRef.Namespace, "MissingKey", DefaultJavaKeystorePasswordSecretKey)
-					}
-				}
-			}
-		} else {
-			globalLog.Info("KeyStorePasswordSecretRef is not set in ClusterJavaKeystore spec, defaulting to '"+DefaultJavaKeystorePassword+"'", "NamespacedName", req.NamespacedName)
-		}
+		keyStorePassword := r.resolveKeystorePassword(clusterJavaKeystore, req)
 
 		// =====================================================================================================================================
 		// Check if we're including the default trusted CA store certificates and if so, attempt to read them in and include them in the list of certificates to be added to the Java Keystore. If the default CA certificates file cannot be read for any reason, we will log the error and continue processing without including the default CA certificates since the user may not care about including them and we don't want a failure to read the default CA certificates to prevent any other valid certificates from being added to the Java Keystore.
