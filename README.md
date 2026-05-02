@@ -1,5 +1,9 @@
 # jks-operator
 
+[![Lint](https://github.com/kenmoini/jks-operator/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/kenmoini/jks-operator/actions/workflows/lint.yml) [![Tests](https://github.com/kenmoini/jks-operator/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/kenmoini/jks-operator/actions/workflows/test.yml) [![Operator - Build](https://github.com/kenmoini/jks-operator/actions/workflows/build-container.yml/badge.svg)](https://github.com/kenmoini/jks-operator/actions/workflows/build-container.yml) [![Bundle - Build](https://github.com/kenmoini/jks-operator/actions/workflows/build-bundle.yml/badge.svg)](https://github.com/kenmoini/jks-operator/actions/workflows/build-bundle.yml)
+
+> This is a community operator, unsupported by Red Hat. Support is tired of hearing about me.
+
 The Java Keystore Operator creates Java Keystore files from PEM bundles or TLS Secrets.
 
 ## Description
