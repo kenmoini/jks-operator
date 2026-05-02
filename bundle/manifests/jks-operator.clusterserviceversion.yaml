@@ -14,7 +14,14 @@ metadata:
             },
             "name": "clusterjavakeystore-sample"
           },
-          "spec": null
+          "spec": {
+            "rootCAConfigMaps": [
+              {
+                "name": "root-trusted-ca",
+                "namespace": "default"
+              }
+            ]
+          }
         },
         {
           "apiVersion": "jks.kemo.dev/v1alpha1",
@@ -30,7 +37,7 @@ metadata:
         }
       ]
     capabilities: Basic Install
-    createdAt: "2026-05-01T03:02:09Z"
+    createdAt: "2026-05-02T13:25:01Z"
     operators.operatorframework.io/builder: operator-sdk-v1.42.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
   name: jks-operator.v0.0.1
