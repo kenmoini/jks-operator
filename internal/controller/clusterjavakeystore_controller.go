@@ -99,7 +99,7 @@ func (r *ClusterJavaKeystoreReconciler) reconcileSystemConfigMap(ctx context.Con
 	}
 	cmExists := err == nil
 
-	if cmExists && systemConfigMapIsCurrent(existing, "ClusterJavaKeystore", cjks.Name, hash) {
+	if cmExists && systemConfigMapIsCurrent(existing, "ClusterJavaKeystore", cjks.Name, DefaultJavaKeystoreConfigMapKey, hash) {
 		globalLog.Info("System ConfigMap already up to date (cert-hash matches), skipping render and update", "ConfigMapName", name.Name, "CertHash", hash)
 		return nil
 	}

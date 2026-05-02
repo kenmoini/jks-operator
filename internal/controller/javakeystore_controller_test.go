@@ -31,6 +31,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/pavlo-v-chernykh/keystore-go/v4"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -225,6 +226,101 @@ var _ = Describe("JavaKeystore Controller", func() {
 
 			By("asserting the leaf CN appears as a PrivateKeyEntry alias")
 			Expect(ks.IsPrivateKeyEntry(tlsCN)).To(BeTrue(), "expected PrivateKeyEntry alias %q in rendered keystore; aliases were %v", tlsCN, ks.Aliases())
+		})
+	})
+
+	Context("When reconciling a resource with custom targetConfigMap and targetSecret", func() {
+		const (
+			resourceName     = "char-jks-targets"
+			sourceCMName     = "char-jks-targets-source"
+			sourceCMKey      = "ca.crt"
+			customCMName     = "my-custom-keystore-cm"
+			customCMKey      = "my-truststore.jks"
+			customSecretName = "my-custom-keystore-secret"
+			customSecretKey  = "STORE_PASS"
+			testNS           = "default"
+			defaultCMSuffix  = "-jks"
+			defaultSecretSfx = "-jks-password"
+		)
+
+		ctx := context.Background()
+
+		BeforeEach(func() {
+			By("creating the source ConfigMap with a self-signed PEM cert")
+			pemCert := mustGenerateSelfSignedPEMCertificate("char-jks-targets-ca")
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: sourceCMName, Namespace: testNS},
+				Data:       map[string]string{sourceCMKey: string(pemCert)},
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+			By("creating the JavaKeystore CR with custom targetConfigMap and targetSecret")
+			jks := &jksv1alpha1.JavaKeystore{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNS},
+				Spec: jksv1alpha1.JavaKeystoreSpec{
+					RootCAConfigMaps: []jksv1alpha1.NamespacedConfigMapReference{
+						{Name: sourceCMName, Key: sourceCMKey},
+					},
+					TargetConfigMap: jksv1alpha1.NamespacedConfigMapReference{
+						Name: customCMName,
+						Key:  customCMKey,
+					},
+					TargetSecret: jksv1alpha1.NamespacedSecretReference{
+						Name: customSecretName,
+						Key:  customSecretKey,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, jks)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			By("cleaning up the JavaKeystore CR")
+			jks := &jksv1alpha1.JavaKeystore{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: testNS}}
+			_ = k8sClient.Delete(ctx, jks)
+
+			By("cleaning up the source ConfigMap")
+			src := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: sourceCMName, Namespace: testNS}}
+			_ = k8sClient.Delete(ctx, src)
+
+			By("cleaning up the custom-named ConfigMap")
+			customCM := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: customCMName, Namespace: testNS}}
+			_ = k8sClient.Delete(ctx, customCM)
+
+			By("cleaning up the custom-named Secret")
+			customSec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: customSecretName, Namespace: testNS}}
+			_ = k8sClient.Delete(ctx, customSec)
+		})
+
+		It("writes the keystore + password to the user-specified names and keys, and not to the defaults", func() {
+			By("Reconciling the resource")
+			r := &JavaKeystoreReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: resourceName, Namespace: testNS},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the custom-named ConfigMap exists with bytes under the custom key")
+			customCM := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: customCMName, Namespace: testNS}, customCM)).To(Succeed())
+			Expect(customCM.BinaryData[customCMKey]).NotTo(BeEmpty())
+			Expect(customCM.BinaryData[DefaultJavaKeystoreConfigMapKey]).To(BeEmpty(), "default key should not be populated when a custom Key is set")
+
+			By("verifying the custom-named Secret exists with the password under the custom key")
+			customSec := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: customSecretName, Namespace: testNS}, customSec)).To(Succeed())
+			Expect(customSec.Data[customSecretKey]).To(Equal([]byte(DefaultJavaKeystorePassword)))
+			Expect(customSec.Data[DefaultJavaKeystorePasswordSecretKey]).To(BeEmpty(), "default key should not be populated when a custom Key is set")
+
+			By("verifying the default-named ConfigMap was NOT created")
+			defaultCM := &corev1.ConfigMap{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + defaultCMSuffix, Namespace: testNS}, defaultCM)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "default-named ConfigMap should not exist when targetConfigMap is set; got err=%v", err)
+
+			By("verifying the default-named Secret was NOT created")
+			defaultSec := &corev1.Secret{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: resourceName + defaultSecretSfx, Namespace: testNS}, defaultSec)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "default-named Secret should not exist when targetSecret is set; got err=%v", err)
 		})
 	})
 })

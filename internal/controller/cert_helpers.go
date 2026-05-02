@@ -287,14 +287,17 @@ func computeKeystoreSourceHash(certificates []CertificateNameMapping, keypairs [
 }
 
 // systemConfigMapIsCurrent reports whether the on-cluster system ConfigMap already encodes
-// the expected hash, has non-empty JKS bytes, and carries the expected ownership stamps.
-// When true, the keystore render+update can be skipped entirely. ownerKind is the literal
-// component string used in setOwnershipAnnotations ("ClusterJavaKeystore" or "JavaKeystore").
-func systemConfigMapIsCurrent(cm *corev1.ConfigMap, ownerKind, instanceName, hash string) bool {
+// the expected hash under the given dataKey, has non-empty JKS bytes there, and carries
+// the expected ownership stamps. When true, the keystore render+update can be skipped
+// entirely. ownerKind is the literal component string used in setOwnershipAnnotations
+// ("ClusterJavaKeystore" or "JavaKeystore"); dataKey is the BinaryData key the keystore
+// bytes live under (the cluster controller always passes DefaultJavaKeystoreConfigMapKey;
+// the namespaced controller may pass a user-overridden key from Spec.TargetConfigMap.Key).
+func systemConfigMapIsCurrent(cm *corev1.ConfigMap, ownerKind, instanceName, dataKey, hash string) bool {
 	if cm.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] != hash {
 		return false
 	}
-	if len(cm.BinaryData[DefaultJavaKeystoreConfigMapKey]) == 0 {
+	if len(cm.BinaryData[dataKey]) == 0 {
 		return false
 	}
 	return hasOwnershipAnnotations(cm, ownerKind, instanceName)

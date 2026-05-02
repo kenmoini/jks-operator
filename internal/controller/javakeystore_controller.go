@@ -74,12 +74,46 @@ func (r *JavaKeystoreReconciler) resolveKeystorePassword(jks *jksv1alpha1.JavaKe
 	return string(password)
 }
 
+// resolveTargetConfigMap returns the (name, dataKey) pair to use for the output ConfigMap.
+// Spec.TargetConfigMap.Name overrides the default suffix-based name "<jks.Name>-jks";
+// Spec.TargetConfigMap.Key overrides the default BinaryData key DefaultJavaKeystoreConfigMapKey
+// ("keystore.jks"). Either field may be set independently.
+func resolveTargetConfigMap(jks *jksv1alpha1.JavaKeystore) (string, string) {
+	name := jks.Spec.TargetConfigMap.Name
+	if name == "" {
+		name = jks.Name + "-jks"
+	}
+	key := jks.Spec.TargetConfigMap.Key
+	if key == "" {
+		key = DefaultJavaKeystoreConfigMapKey
+	}
+	return name, key
+}
+
+// resolveTargetSecret returns the (name, dataKey) pair to use for the password Secret.
+// Spec.TargetSecret.Name overrides the default suffix-based name "<jks.Name>-jks-password";
+// Spec.TargetSecret.Key overrides the default Data key DefaultJavaKeystorePasswordSecretKey
+// ("password"). Either field may be set independently.
+func resolveTargetSecret(jks *jksv1alpha1.JavaKeystore) (string, string) {
+	name := jks.Spec.TargetSecret.Name
+	if name == "" {
+		name = jks.Name + "-jks-password"
+	}
+	key := jks.Spec.TargetSecret.Key
+	if key == "" {
+		key = DefaultJavaKeystorePasswordSecretKey
+	}
+	return name, key
+}
+
 // reconcileSystemConfigMap renders the JKS bytes (only when the on-cluster ConfigMap is
-// stale per systemConfigMapIsCurrent) and creates or updates the system ConfigMap with
-// the rendered bytes, source-hash annotation, and ownership stamps. The output ConfigMap
-// is named "<jks.Name>-jks" and lives in the CR's namespace.
-func (r *JavaKeystoreReconciler) reconcileSystemConfigMap(ctx context.Context, jks *jksv1alpha1.JavaKeystore, certificates []CertificateNameMapping, keypairs []KeypairEntry, password, hash string) error {
-	name := types.NamespacedName{Name: jks.Name + "-jks", Namespace: jks.Namespace}
+// stale per systemConfigMapIsCurrent) and creates or updates the output ConfigMap with
+// the rendered bytes (under dataKey), source-hash annotation, and ownership stamps. The
+// output ConfigMap lives in the CR's namespace; targetName + dataKey come from
+// resolveTargetConfigMap so user-supplied Spec.TargetConfigMap.Name / .Key override the
+// default suffix and key respectively.
+func (r *JavaKeystoreReconciler) reconcileSystemConfigMap(ctx context.Context, jks *jksv1alpha1.JavaKeystore, targetName, dataKey string, certificates []CertificateNameMapping, keypairs []KeypairEntry, password, hash string) error {
+	name := types.NamespacedName{Name: targetName, Namespace: jks.Namespace}
 	existing := &corev1.ConfigMap{}
 	err := r.Get(ctx, name, existing)
 	if err != nil && !kapierrors.IsNotFound(err) {
@@ -88,8 +122,8 @@ func (r *JavaKeystoreReconciler) reconcileSystemConfigMap(ctx context.Context, j
 	}
 	cmExists := err == nil
 
-	if cmExists && systemConfigMapIsCurrent(existing, JKS_CR_Name, jks.Name, hash) {
-		globalLog.Info("System ConfigMap already up to date (source-hash matches), skipping render and update", "ConfigMapName", name.Name, "SourceHash", hash)
+	if cmExists && systemConfigMapIsCurrent(existing, JKS_CR_Name, jks.Name, dataKey, hash) {
+		globalLog.Info("System ConfigMap already up to date (source-hash matches), skipping render and update", "ConfigMapName", name.Name, "DataKey", dataKey, "SourceHash", hash)
 		return nil
 	}
 
@@ -109,7 +143,7 @@ func (r *JavaKeystoreReconciler) reconcileSystemConfigMap(ctx context.Context, j
 					*metav1.NewControllerRef(jks, jksv1alpha1.GroupVersion.WithKind(JKS_CR_Name)),
 				},
 			},
-			BinaryData: map[string][]byte{DefaultJavaKeystoreConfigMapKey: jksBytes},
+			BinaryData: map[string][]byte{dataKey: jksBytes},
 		}
 		setOwnershipAnnotations(cm, JKS_CR_Name, jks.Name)
 		cm.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] = hash
@@ -117,37 +151,39 @@ func (r *JavaKeystoreReconciler) reconcileSystemConfigMap(ctx context.Context, j
 			globalLog.Error(err, "Failed to create ConfigMap to store generated Java Keystore", "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace)
 			return err
 		}
-		globalLog.Info("Successfully created ConfigMap to store generated Java Keystore", "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace, "SourceHash", hash)
+		globalLog.Info("Successfully created ConfigMap to store generated Java Keystore", "ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace, "DataKey", dataKey, "SourceHash", hash)
 		return nil
 	}
 
 	if existing.BinaryData == nil {
 		existing.BinaryData = map[string][]byte{}
 	}
-	existing.BinaryData[DefaultJavaKeystoreConfigMapKey] = jksBytes
+	existing.BinaryData[dataKey] = jksBytes
 	setOwnershipAnnotations(existing, JKS_CR_Name, jks.Name)
 	existing.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] = hash
 	if err := r.Update(ctx, existing); err != nil {
 		globalLog.Error(err, "Failed to update ConfigMap to store generated Java Keystore", "ConfigMapName", existing.Name, "ConfigMapNamespace", existing.Namespace)
 		return err
 	}
-	globalLog.Info("Successfully updated ConfigMap to store generated Java Keystore", "ConfigMapName", existing.Name, "ConfigMapNamespace", existing.Namespace, "SourceHash", hash)
+	globalLog.Info("Successfully updated ConfigMap to store generated Java Keystore", "ConfigMapName", existing.Name, "ConfigMapNamespace", existing.Namespace, "DataKey", dataKey, "SourceHash", hash)
 	return nil
 }
 
 // reconcileSystemSecret create-or-updates the password Secret for this CR. Updates only
 // fire when the existing Data differs OR ownership annotations are missing/wrong. The
-// output Secret is named "<jks.Name>-jks-password" and lives in the CR's namespace.
-func (r *JavaKeystoreReconciler) reconcileSystemSecret(ctx context.Context, jks *jksv1alpha1.JavaKeystore, password string) error {
+// output Secret lives in the CR's namespace; targetName + dataKey come from
+// resolveTargetSecret so user-supplied Spec.TargetSecret.Name / .Key override the default
+// suffix and key respectively.
+func (r *JavaKeystoreReconciler) reconcileSystemSecret(ctx context.Context, jks *jksv1alpha1.JavaKeystore, targetName, dataKey, password string) error {
 	desired := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      jks.Name + "-jks-password",
+			Name:      targetName,
 			Namespace: jks.Namespace,
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(jks, jksv1alpha1.GroupVersion.WithKind(JKS_CR_Name)),
 			},
 		},
-		Data: map[string][]byte{DefaultJavaKeystorePasswordSecretKey: []byte(password)},
+		Data: map[string][]byte{dataKey: []byte(password)},
 	}
 	setOwnershipAnnotations(desired, JKS_CR_Name, jks.Name)
 
@@ -252,10 +288,13 @@ func (r *JavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// canonical input hash, not the output bytes.
 	hash := computeKeystoreSourceHash(certificates, keypairs)
 
-	if err := r.reconcileSystemConfigMap(ctx, jks, certificates, keypairs, keyStorePassword, hash); err != nil {
+	cmName, cmKey := resolveTargetConfigMap(jks)
+	secretName, secretKey := resolveTargetSecret(jks)
+
+	if err := r.reconcileSystemConfigMap(ctx, jks, cmName, cmKey, certificates, keypairs, keyStorePassword, hash); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
 	}
-	if err := r.reconcileSystemSecret(ctx, jks, keyStorePassword); err != nil {
+	if err := r.reconcileSystemSecret(ctx, jks, secretName, secretKey, keyStorePassword); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
 	}
 

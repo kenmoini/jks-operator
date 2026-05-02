@@ -41,10 +41,10 @@ type JavaKeystoreSpec struct {
 	// TLSCertSecretRef is a reference to a list of Secrets that contain a TLS certificate and private key to be included in the Java Keystore. This field is optional and if omitted, no TLS certificate will be included in the Java Keystore.
 	TLSCertSecretRef []NamespacedSecretReference `json:"tlsCertSecretRef,omitempty"`
 
-	// TargetConfigMap is a reference to the ConfigMap where the generated Java Keystore will be stored. The ConfigMap will be created in the same namespace as the JavaKeystore. This field is optional and if omitted, a default name of "<java-keystore-name>-keystore" will be used.
+	// TargetConfigMap is a reference to the ConfigMap where the generated Java Keystore will be stored. The ConfigMap is created in the same namespace as the JavaKeystore. Both fields are optional: Name defaults to "<java-keystore-name>-jks" and Key defaults to "keystore.jks".
 	TargetConfigMap NamespacedConfigMapReference `json:"targetConfigMap,omitempty"`
 
-	// TargetSecret is a reference to the Secret where the password for the Java Keystore will be stored. The Secret will be created in the same namespace as the JavaKeystore. This field is optional and if omitted, a default name of "<java-keystore-name>-password" will be used.
+	// TargetSecret is a reference to the Secret where the password for the Java Keystore will be stored. The Secret is created in the same namespace as the JavaKeystore. Both fields are optional: Name defaults to "<java-keystore-name>-jks-password" and Key defaults to "password".
 	TargetSecret NamespacedSecretReference `json:"targetSecret,omitempty"`
 }
 
