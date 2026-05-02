@@ -65,7 +65,7 @@ func (r *ClusterJavaKeystoreSecretInjectorReconciler) Reconcile(ctx context.Cont
 
 	// Cleanup-on-unlabel: previously injected, now unlabeled. Remove only the keys we wrote.
 	if crName == "" {
-		if target.Annotations[DefaultOwningComponentAnnotationKey] == "ClusterJavaKeystore" &&
+		if target.Annotations[DefaultOwningComponentAnnotationKey] == CJKS_CR_Name &&
 			target.Annotations[DefaultOwningInstanceAnnotationKey] != "" {
 			return r.cleanupUnlabeled(ctx, target)
 		}
@@ -126,7 +126,7 @@ func (r *ClusterJavaKeystoreSecretInjectorReconciler) Reconcile(ctx context.Cont
 
 	if existing, ok := target.Data[DefaultJavaKeystorePasswordSecretKey]; ok &&
 		bytes.Equal(existing, wantPassword) &&
-		hasOwnershipAnnotations(target, "ClusterJavaKeystore", crName) {
+		hasOwnershipAnnotations(target, CJKS_CR_Name, crName) {
 		secretInjectorLog.Info("Labeled Secret already up to date, skipping",
 			"ClusterJavaKeystoreName", crName, "SecretName", target.Name, "SecretNamespace", target.Namespace)
 		return ctrl.Result{}, nil
@@ -136,7 +136,7 @@ func (r *ClusterJavaKeystoreSecretInjectorReconciler) Reconcile(ctx context.Cont
 		target.Data = map[string][]byte{}
 	}
 	target.Data[DefaultJavaKeystorePasswordSecretKey] = wantPassword
-	setOwnershipAnnotations(target, "ClusterJavaKeystore", crName)
+	setOwnershipAnnotations(target, CJKS_CR_Name, crName)
 
 	if err := r.Update(ctx, target); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
@@ -166,7 +166,7 @@ func isSystemKeystoreSecretPredicate() predicate.Predicate {
 			return false
 		}
 		for _, ref := range obj.GetOwnerReferences() {
-			if ref.Kind == "ClusterJavaKeystore" && ref.Controller != nil && *ref.Controller {
+			if ref.Kind == CJKS_CR_Name && ref.Controller != nil && *ref.Controller {
 				return true
 			}
 		}
@@ -183,7 +183,7 @@ func isSystemKeystoreSecretPredicate() predicate.Predicate {
 func (r *ClusterJavaKeystoreSecretInjectorReconciler) mapSystemSecretToLabeledSecrets(ctx context.Context, obj client.Object) []reconcile.Request {
 	crName := ""
 	for _, ref := range obj.GetOwnerReferences() {
-		if ref.Kind == "ClusterJavaKeystore" {
+		if ref.Kind == CJKS_CR_Name {
 			crName = ref.Name
 			break
 		}

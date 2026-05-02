@@ -71,8 +71,8 @@ func (r *ClusterJavaKeystoreConfigMapInjectorReconciler) Reconcile(ctx context.C
 	// is now gone or empty. Strip what we wrote and exit. Don't touch ConfigMaps that
 	// don't bear our ownership stamp — they were never ours to manage.
 	if crName == "" {
-		if hasOwnershipAnnotations(target, "ClusterJavaKeystore", target.Annotations[DefaultOwningInstanceAnnotationKey]) &&
-			target.Annotations[DefaultOwningComponentAnnotationKey] == "ClusterJavaKeystore" {
+		if hasOwnershipAnnotations(target, CJKS_CR_Name, target.Annotations[DefaultOwningInstanceAnnotationKey]) &&
+			target.Annotations[DefaultOwningComponentAnnotationKey] == CJKS_CR_Name {
 			return r.cleanupUnlabeled(ctx, target)
 		}
 		return ctrl.Result{}, nil
@@ -142,7 +142,7 @@ func (r *ClusterJavaKeystoreConfigMapInjectorReconciler) Reconcile(ctx context.C
 	// Idempotency.
 	if target.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] == wantHash &&
 		len(target.BinaryData[DefaultJavaKeystoreConfigMapKey]) > 0 &&
-		hasOwnershipAnnotations(target, "ClusterJavaKeystore", crName) {
+		hasOwnershipAnnotations(target, CJKS_CR_Name, crName) {
 		configMapInjectorLog.Info("Labeled ConfigMap already up to date, skipping",
 			"ClusterJavaKeystoreName", crName, "ConfigMapName", target.Name, "ConfigMapNamespace", target.Namespace)
 		return ctrl.Result{}, nil
@@ -152,7 +152,7 @@ func (r *ClusterJavaKeystoreConfigMapInjectorReconciler) Reconcile(ctx context.C
 		target.BinaryData = map[string][]byte{}
 	}
 	target.BinaryData[DefaultJavaKeystoreConfigMapKey] = wantBytes
-	setOwnershipAnnotations(target, "ClusterJavaKeystore", crName)
+	setOwnershipAnnotations(target, CJKS_CR_Name, crName)
 	target.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] = wantHash
 
 	if err := r.Update(ctx, target); err != nil {
@@ -188,7 +188,7 @@ func isSystemKeystoreConfigMapPredicate() predicate.Predicate {
 			return false
 		}
 		for _, ref := range obj.GetOwnerReferences() {
-			if ref.Kind == "ClusterJavaKeystore" && ref.Controller != nil && *ref.Controller {
+			if ref.Kind == CJKS_CR_Name && ref.Controller != nil && *ref.Controller {
 				return true
 			}
 		}
@@ -208,7 +208,7 @@ func isSystemKeystoreConfigMapPredicate() predicate.Predicate {
 func (r *ClusterJavaKeystoreConfigMapInjectorReconciler) mapSystemCMToLabeledConfigMaps(ctx context.Context, obj client.Object) []reconcile.Request {
 	crName := ""
 	for _, ref := range obj.GetOwnerReferences() {
-		if ref.Kind == "ClusterJavaKeystore" {
+		if ref.Kind == CJKS_CR_Name {
 			crName = ref.Name
 			break
 		}

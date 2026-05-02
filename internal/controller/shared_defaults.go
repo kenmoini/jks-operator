@@ -18,6 +18,8 @@ package controller
 
 // This file contains default values for the Java Keystore Operator.
 const (
+	CJKS_CR_Name                                 = "ClusterJavaKeystore"
+	JKS_CR_Name                                  = "JavaKeystore"
 	DefaultCACertificatesPath                    = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
 	DefaultAddDefaultCACertificates              = false
 	DefaultJavaKeystorePassword                  = "changeit"
