@@ -12,11 +12,23 @@ The JKS Operator operates in a Cluster or Namespace scoped mode, offering cluste
 
 ### ClusterJavaKeystore
 
-- Defines a list of ConfigMaps that hold PEM encoded certificates
-- Enumerates the Certificates found in the ConfigMap(s), taking the CommonName as an alias to inject in JKS Trust Bundle.
-- Optionally takes all the default CA Certificates and enumerates them as well for inclusion (default: false)
+The goal of the ClusterJavaKeystore is to operate similarly to OpenShift Cluster Network Operator which has the ability to inject the trusted CA bundle into ConfigMaps with a certain label.
+
+The ClusterJavaKeystore takes in PEM-formatted CA certificates from ConfigMaps and creates a Java Keystore file in another ConfigMap.  This way you can easily mount additional trusted Root CAs to your Java workloads.
+
+The general workflow of the ClusterJavaKeystore follows:
+
+- A list of ConfigMaps that hold PEM encoded certificates is defined in the ClusterJavaKeystore, in addition to some optional parameters.
+- Enumerates the Certificates found in the ConfigMap(s), determining the CommonName as an alias to inject in JKS Trust Bundle.
+- Optionally takes all the default system CA Certificates included with the manager container and enumerates them as well for inclusion (default: false)
 - With the Root CAs enumerated, will create a ConfigMap and Secret containing the JKS binary data and password in the namespace the operator was installed to.
-- When a ConfigMap or Secret is created with the annotation `jks.kemo.dev/clusterkeystore` with a value that matches the name of the ClusterJavaKeystore, the Operator will inject the created JKS into it with the key `keystore.jks`
+- When a ConfigMap or Secret in the cluster is created with the annotation `jks.kemo.dev/clusterkeystore` with a value that matches the name of the ClusterJavaKeystore, the Operator will inject the created JKS into it with the key `keystore.jks` if it is a ConfigMap and the JKS password into the key `password` if it is a labeled Secret.
+
+### JavaKeystore - WIP
+
+The JavaKeystore operates similarly to the ClusterJavaKeystore, however its referenced and resulting resources are bound to the Namespace that the JavaKeystore is created in.
+
+The JavaKeystore has an additional component to it's API spec that allows adding TLS-type Secrets to the generated Java Keystore, optionally in addition to the trusted CA bundle.
 
 ## Getting Started
 
