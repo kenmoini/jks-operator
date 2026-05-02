@@ -96,6 +96,63 @@ func (r *ClusterJavaKeystoreReconciler) resolveKeystorePassword(cjks *jksv1alpha
 	return string(password)
 }
 
+// parseAndEncodePEMCertificate parses a PEM block as an X.509 certificate, re-encodes the
+// cert.Raw bytes back to a fresh PEM buffer, and returns a CertificateNameMapping ready
+// for inclusion in the Java Keystore. Re-encoding (rather than retaining block.Bytes) is
+// intentional — it normalises any non-canonical PEM input to a single byte representation
+// so byte-equality dedup works deterministically.
+func parseAndEncodePEMCertificate(block *pem.Block) (CertificateNameMapping, error) {
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return CertificateNameMapping{}, fmt.Errorf("parse certificate: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := pem.Encode(&buf, &pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}); err != nil {
+		return CertificateNameMapping{}, fmt.Errorf("encode certificate: %w", err)
+	}
+	return CertificateNameMapping{
+		CommonName:       determineCommonNameForCertificate(cert),
+		ExpirationDate:   cert.NotAfter,
+		CreationDate:     cert.NotBefore,
+		CertificateBytes: buf.Bytes(),
+	}, nil
+}
+
+// loadDefaultCACertificates appends system CA certificates from disk to certificates when
+// Spec.AddDefaultCACertificates is true. File-read failures are logged and swallowed —
+// the user may not care if the bundle is unavailable, and we don't want a missing trust
+// store to block valid user-supplied certificates.
+func (r *ClusterJavaKeystoreReconciler) loadDefaultCACertificates(cjks *jksv1alpha1.ClusterJavaKeystore, req ctrl.Request, certificates []CertificateNameMapping) []CertificateNameMapping {
+	if !cjks.Spec.AddDefaultCACertificates {
+		globalLog.Info("Not including default CA certificates as specified in ClusterJavaKeystore spec", "NamespacedName", req.NamespacedName)
+		return certificates
+	}
+	path := cjks.Spec.DefaultCACertificatesPath
+	if path == "" {
+		path = DefaultCACertificatesPath
+	}
+	globalLog.Info("Attempting to read default CA certificates from file", "FilePath", path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		globalLog.Error(err, "Failed to read default CA certificates from file, continuing without including default CA certificates", "FilePath", path)
+		return certificates
+	}
+	globalLog.Info("Successfully read default CA certificates from file, processing certificates", "FilePath", path)
+	for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+		if block.Type != "CERTIFICATE" {
+			globalLog.Info("PEM block is not a certificate, skipping", "FilePath", path, "PEMBlockType", block.Type)
+			continue
+		}
+		ci, err := parseAndEncodePEMCertificate(block)
+		if err != nil {
+			globalLog.Error(err, "Failed to parse/encode certificate from default CA bundle, skipping this certificate", "FilePath", path)
+			continue
+		}
+		certificates = appendUniqueCertificate(certificates, ci, "FilePath", path)
+	}
+	return certificates
+}
+
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=jks.kemo.dev,resources=clusterjavakeystores,verbs=get;list;watch;create;update;patch;delete
@@ -140,62 +197,7 @@ func (r *ClusterJavaKeystoreReconciler) Reconcile(ctx context.Context, req ctrl.
 		keyStorePassword := r.resolveKeystorePassword(clusterJavaKeystore, req)
 
 		// =====================================================================================================================================
-		// Check if we're including the default trusted CA store certificates and if so, attempt to read them in and include them in the list of certificates to be added to the Java Keystore. If the default CA certificates file cannot be read for any reason, we will log the error and continue processing without including the default CA certificates since the user may not care about including them and we don't want a failure to read the default CA certificates to prevent any other valid certificates from being added to the Java Keystore.
-		if clusterJavaKeystore.Spec.AddDefaultCACertificates {
-			systemCACertPath := clusterJavaKeystore.Spec.DefaultCACertificatesPath
-			if systemCACertPath == "" {
-				// If the user did not specify a custom path for the default CA certificates, we will attempt to read them from the default location in the UBI container since that is the most likely scenario for where this controller will be running. If the file cannot be read from the default location, we will log the error and continue processing without including the default CA certificates since the user may not care about including them and we don't want a failure to read the default CA certificates to prevent any other valid certificates from being added to the Java Keystore.
-				systemCACertPath = DefaultCACertificatesPath
-			}
-			globalLog.Info("Attempting to read default CA certificates from file", "FilePath", systemCACertPath)
-			defaultCACertsData, err := os.ReadFile(systemCACertPath)
-			if err != nil {
-				globalLog.Error(err, "Failed to read default CA certificates from file, continuing without including default CA certificates", "FilePath", systemCACertPath)
-			} else {
-				globalLog.Info("Successfully read default CA certificates from file, processing certificates", "FilePath", systemCACertPath)
-				for block, rest := pem.Decode(defaultCACertsData); block != nil; block, rest = pem.Decode(rest) {
-					if block.Type == "CERTIFICATE" {
-						cert, err := x509.ParseCertificate(block.Bytes)
-						if err != nil {
-							globalLog.Error(err, "Failed to parse certificate from PEM block for default CA certificate, skipping this certificate", "FilePath", systemCACertPath)
-							continue
-						}
-						determinedCommonName := determineCommonNameForCertificate(cert)
-
-						pemBlock := &pem.Block{
-							Type:  "CERTIFICATE",
-							Bytes: cert.Raw,
-						}
-						var pemBuffer bytes.Buffer
-						if err := pem.Encode(&pemBuffer, pemBlock); err != nil {
-							globalLog.Error(err, "Failed to encode certificate back to PEM format for default CA certificate, skipping this certificate", "FilePath", systemCACertPath, "CertificateCommonName", determinedCommonName)
-							continue
-						}
-						// Ensure there are no duplicate certificates being added to the list by comparing the bytes of the certificates since Common Names are not guaranteed to be unique among different certificates. If a duplicate is found, it will be skipped and not added to the list to avoid issues with adding duplicate certificates to the Java Keystore.
-						isDuplicate := false
-						for _, existingCert := range certificates {
-							if bytes.Equal(existingCert.CertificateBytes, pemBuffer.Bytes()) {
-								globalLog.Info("Certificate with identical bytes already exists, skipping to avoid duplicates in Java Keystore", "FilePath", systemCACertPath, "CertificateCommonName", determinedCommonName)
-								isDuplicate = true
-								break
-							}
-						}
-						if !isDuplicate {
-							certificates = append(certificates, CertificateNameMapping{
-								CommonName:       determinedCommonName,
-								ExpirationDate:   cert.NotAfter,
-								CreationDate:     cert.NotBefore,
-								CertificateBytes: pemBuffer.Bytes(),
-							})
-						}
-					} else {
-						globalLog.Info("PEM block is not a certificate, skipping", "FilePath", systemCACertPath, "PEMBlockType", block.Type)
-					}
-				}
-			}
-		} else {
-			globalLog.Info("Not including default CA certificates as specified in ClusterJavaKeystore spec", "NamespacedName", req.NamespacedName)
-		}
+		certificates = r.loadDefaultCACertificates(clusterJavaKeystore, req, certificates)
 
 		// =====================================================================================================================================
 		// Enumerate through the ConfigMaps referenced in the ClusterJavaKeystore and map them
