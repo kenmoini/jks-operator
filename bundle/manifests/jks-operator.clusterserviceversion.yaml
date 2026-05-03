@@ -53,7 +53,7 @@ metadata:
       Developer Tools,Integration & Delivery,Middleware,OpenShift Optional,Security
     certified: "false"
     containerImage: quay.io/kenmoini/jks-operator:latest
-    createdAt: "2026-05-03T12:23:37Z"
+    createdAt: "2026-05-03T13:07:14Z"
     description: Generates Java Keystores dynamically for distribution to Java-based
       applications
     displayName: Java Keystore Operator
@@ -73,7 +73,7 @@ metadata:
     operatorframework.io/arch.s390x: supported
     operatorframework.io/os.linux: supported
     operatorframework.io/os.zos: supported
-  name: jks-operator.v0.0.3
+  name: jks-operator.v0.0.4
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -199,7 +199,7 @@ spec:
                 - --health-probe-bind-address=:8081
                 command:
                 - /manager
-                image: quay.io/kenmoini/jks-operator:v0.0.3
+                image: quay.io/kenmoini/jks-operator:v0.0.4
                 livenessProbe:
                   httpGet:
                     path: /healthz
@@ -216,7 +216,7 @@ spec:
                 resources:
                   limits:
                     cpu: 500m
-                    memory: 128Mi
+                    memory: 512Mi
                   requests:
                     cpu: 10m
                     memory: 64Mi
@@ -294,4 +294,4 @@ spec:
   provider:
     name: Ken Moini
     url: https://github.com/kenmoini/jks-operator
-  version: 0.0.3
+  version: 0.0.4
