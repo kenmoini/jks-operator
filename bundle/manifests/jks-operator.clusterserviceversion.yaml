@@ -53,7 +53,7 @@ metadata:
       Developer Tools,Integration & Delivery,Middleware,OpenShift Optional,Security
     certified: "false"
     containerImage: quay.io/kenmoini/jks-operator:latest
-    createdAt: "2026-05-03T02:49:34Z"
+    createdAt: "2026-05-03T02:53:40Z"
     description: Generates Java Keystores dynamically for distribution to Java-based
       applications
     displayName: Java Keystore Operator
@@ -79,13 +79,21 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: ClusterJavaKeystore is the Schema for the clusterjavakeystores
-        API.
+    - description: ClusterJavaKeystore is a cluster-scoped resource that defines the
+        desired state and observed state of a Java Keystore that is generated from
+        a set of Root CA certificates and an optional TLS certificate. The generated
+        Java Keystore is stored in a ConfigMap and the password for the Java Keystore
+        is stored in a Secret. Namespaces can reference this ClusterJavaKeystore to
+        use the generated Java Keystore.
       displayName: Cluster Java Keystore
       kind: ClusterJavaKeystore
       name: clusterjavakeystores.jks.kemo.dev
       version: v1alpha1
-    - description: JavaKeystore is the Schema for the javakeystores API.
+    - description: JavaKeystore is a namespaced resource that defines the desired
+        state and observed state of a Java Keystore that is generated from a set of
+        Root CA certificates and an optional TLS certificate. The generated Java Keystore
+        is stored in a ConfigMap and the password for the Java Keystore is stored
+        in a Secret.
       displayName: Java Keystore
       kind: JavaKeystore
       name: javakeystores.jks.kemo.dev
