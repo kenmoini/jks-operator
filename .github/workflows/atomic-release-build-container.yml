@@ -49,8 +49,8 @@ jobs:
         run: |
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
-          echo "TARGETOS=${platform.split('/')[0]}" >> $GITHUB_ENV
-          echo "TARGETARCH=${platform.split('/')[1]}" >> $GITHUB_ENV
+          echo "TARGETOS=$(echo ${platform} | cut -d'/' -f1)" >> $GITHUB_ENV
+          echo "TARGETARCH=$(echo ${platform} | cut -d'/' -f2)" >> $GITHUB_ENV
 
       - name: Login to Quay Container Registry
         uses: docker/login-action@v3
