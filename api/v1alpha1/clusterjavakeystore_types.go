@@ -43,30 +43,12 @@ type ClusterJavaKeystoreSpec struct {
 
 	// SystemNamespace is the namespace the operator is running in and where the Java Keystore ConfigMap and Secret will be created.  If left absent, it will default to "jks-operator".
 	SystemNamespace string `json:"systemNamespace,omitempty"`
-}
 
-// ConfigMapReference defines a reference to a ConfigMap that contains a Certificate.
-type ConfigMapReference struct {
-	// Name of the ConfigMap.
-	Name string `json:"name"`
+	// TargetConfigMap is a reference to the ConfigMap where the generated Java Keystore will be stored. The ConfigMap is created in the SystemNamespace. Both fields are optional: Name defaults to "<java-keystore-name>-jks" and Key defaults to "keystore.jks".
+	TargetConfigMap NamespacedConfigMapReference `json:"targetConfigMap,omitempty"`
 
-	// Namespace of the ConfigMap.
-	Namespace string `json:"namespace"`
-
-	// Key in the ConfigMap that contains the Certificate.  If left absent, all the keys in the ConfigMap will be used that match a PEM encoded certificate.
-	Key string `json:"key,omitempty"`
-}
-
-// SecretReference defines a reference to a Secret that contains the password for the Java Keystore.
-type SecretReference struct {
-	// Name of the Secret.
-	Name string `json:"name"`
-
-	// Namespace of the Secret.
-	Namespace string `json:"namespace"`
-
-	// Key in the Secret that contains the password.  If left absent, the key "password" will be used by default.
-	Key string `json:"key,omitempty"`
+	// TargetSecret is a reference to the Secret where the password for the Java Keystore will be stored. The Secret is created in the SystemNamespace. Both fields are optional: Name defaults to "<java-keystore-name>-jks-password" and Key defaults to "password".
+	TargetSecret NamespacedSecretReference `json:"targetSecret,omitempty"`
 }
 
 // ClusterJavaKeystoreStatus defines the observed state of ClusterJavaKeystore.

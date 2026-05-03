@@ -52,7 +52,7 @@ type JavaKeystoreSpec struct {
 // Must be in the same namespace as the JavaKeystore.
 type NamespacedConfigMapReference struct {
 	// Name of the ConfigMap.
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// Key in the ConfigMap that contains the Certificate.
 	// If left absent, all the keys in the ConfigMap will be used that match a PEM encoded certificate.
@@ -63,7 +63,7 @@ type NamespacedConfigMapReference struct {
 // Must be in the same namespace as the JavaKeystore.
 type NamespacedSecretReference struct {
 	// Name of the Secret.
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// Key in the Secret that contains the password.
 	// If left absent, the key "password" will be used by default.
