@@ -86,7 +86,9 @@ jobs:
           context: ${{ env.BUILD_CONTEXT_PATH }}
           file: ${{ env.CONTAINERFILE_PATH }}
           labels: ${{ steps.meta.outputs.labels }}
-          #build-args: |
+          build-args: |
+            TARGETOS=${{ matrix.platform.split('/')[0] }}
+            TARGETARCH=${{ matrix.platform.split('/')[1] }}
           #  "VERSION=${{ github.head_ref || github.ref_name }}"
           #push: false
           #provenance: false
