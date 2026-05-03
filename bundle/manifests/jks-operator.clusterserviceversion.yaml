@@ -53,9 +53,10 @@ metadata:
       Developer Tools,Integration & Delivery,Middleware,OpenShift Optional,Security
     certified: "false"
     containerImage: quay.io/kenmoini/jks-operator:latest
-    createdAt: "2026-05-03T01:43:36Z"
-    description: Get faster upgrades by pre-pulling OpenShift Release images to nodes
-      so they are available as soon as scheduling occurs.
+    createdAt: "2026-05-03T02:16:55Z"
+    description: Generates Java Keystores dynamically for distribution to Java-based
+      applications
+    displayName: Java Keystore Operator
     features.operators.openshift.io/cnf: "false"
     features.operators.openshift.io/cni: "false"
     features.operators.openshift.io/csi: "false"
@@ -72,7 +73,7 @@ metadata:
     operatorframework.io/arch.s390x: supported
     operatorframework.io/os.linux: supported
     operatorframework.io/os.zos: supported
-  name: jks-operator.v0.0.1
+  name: jks-operator.v0.0.2
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -285,4 +286,4 @@ spec:
   provider:
     name: Ken Moini
     url: https://github.com/kenmoini/jks-operator
-  version: 0.0.1
+  version: 0.0.2
