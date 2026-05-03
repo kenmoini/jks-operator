@@ -53,7 +53,7 @@ metadata:
       Developer Tools,Integration & Delivery,Middleware,OpenShift Optional,Security
     certified: "false"
     containerImage: quay.io/kenmoini/jks-operator:latest
-    createdAt: "2026-05-03T02:16:55Z"
+    createdAt: "2026-05-03T02:49:34Z"
     description: Generates Java Keystores dynamically for distribution to Java-based
       applications
     displayName: Java Keystore Operator
@@ -191,7 +191,7 @@ spec:
                 - --health-probe-bind-address=:8081
                 command:
                 - /manager
-                image: controller:latest
+                image: quay.io/kenmoini/jks-operator:v0.0.2
                 livenessProbe:
                   httpGet:
                     path: /healthz
