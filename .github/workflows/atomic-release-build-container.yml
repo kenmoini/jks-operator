@@ -89,8 +89,8 @@ jobs:
           build-args: |
             TARGETOS=${{ env.TARGETOS }}
             TARGETARCH=${{ env.TARGETARCH }}
+          provenance: false
           #push: true
-          #provenance: false
           #platforms: linux/amd64, linux/arm64
           #provenance: mode=max
           #sbom: true
