@@ -4,11 +4,28 @@
 
 > This is a community operator, unsupported by Red Hat. Support is tired of hearing about me.
 
-The Java Keystore Operator creates Java Keystore files from PEM bundles or TLS Secrets.
+The **Java Keystore Operator** creates Java Keystore files from PEM bundles and/or TLS Secrets.
 
 ## Description
 
-The JKS Operator operates in a Cluster or Namespace scoped mode, offering cluster admins the ability to easily distribute Root Certificate Bundles via JKS blobs, or to distribute JKS blobs generated from TLS-type Secrets.
+The JKS Operator operates in a Cluster or Namespace scoped mode, offering cluster admins the ability to easily distribute Root Certificate Bundles via JKS blobs, and/or to distribute JKS blobs generated from TLS-type Secrets.
+
+### Problem Statement
+
+Things like OpenShift's Cluster Network Operator give you a very easy way to add your own Root Certificates to the cluster trust store, simply by defining them in a ConfigMap named `user-ca-certs` in the `openshift-config` Namespace.  Then you can easily mount those trusted certificates as well as all the default certificates in the system trust store by creating an empty ConfigMap with a special label:
+
+```yaml
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: all-root-trusted-ca
+  labels:
+    config.openshift.io/inject-trusted-cabundle: 'true'
+```
+
+That `config.openshift.io/inject-trusted-cabundle: 'true'` label will make OpenShift's CNO to populate the ConfigMap's `.data[ca-bundle.crt]` with all the PEMs that are trusted.
+
+- While this is great for *normal* applications that need an appended Trust Store mounted to their containers, Java applications are *special*.  Java applications need a Java Keystore file that has all the same things in a different way.  This is what the JKS Operator aims to solve.
 
 ### ClusterJavaKeystore
 
@@ -30,114 +47,19 @@ The JavaKeystore operates similarly to the ClusterJavaKeystore, however its refe
 
 The JavaKeystore has an additional component to it's API spec that allows adding TLS-type Secrets to the generated Java Keystore, optionally in addition to the trusted CA bundle.
 
-## Getting Started
-
-### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
-
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
-
-```sh
-make docker-build docker-push IMG=<some-registry>/jks-operator:tag
-```
-
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
-
-**Install the CRDs into the cluster:**
-
-```sh
-make install
-```
-
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
-
-```sh
-make deploy IMG=<some-registry>/jks-operator:tag
-```
-
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
-```sh
-kubectl apply -k config/samples/
-```
-
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/jks-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/jks-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-operator-sdk edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+---
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
+
+A good way to contribute to this project is to check out the current open Issues and Pull Requests for anything that is currently in-flight.
+
+Any bugs, enhancements, etc should be started with an Issue first to make discussion available over the impact of the request.
+
+Once an Issue is open to track the discussion, you can optionally provide contributions with Pull Requests.
+
+To do so, fork this repo, then make a new branch in your fork to track changes.  Commit them to that branch, push to your fork, and then open a Pull Request from there to merge into `main` which is the primary branch.
+
+Once changes have been merged into main, a versioned release can occur to distribute it and other changes.
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 
