@@ -72,7 +72,7 @@ type NamespacedSecretReference struct {
 
 // JavaKeystoreStatus defines the observed state of JavaKeystore.
 type JavaKeystoreStatus struct {
-	// Conditions represents the latest available observations of the ClusterJavaKeystore's state.
+	// Conditions represents the latest available observations of the JavaKeystore's state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// Generated is a boolean that indicates whether the Java Keystore has been generated successfully.
@@ -85,7 +85,7 @@ type JavaKeystoreStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// JavaKeystore is the Schema for the javakeystores API.
+// JavaKeystore is a namespaced resource that defines the desired state and observed state of a Java Keystore that is generated from a set of Root CA certificates and an optional TLS certificate. The generated Java Keystore is stored in a ConfigMap and the password for the Java Keystore is stored in a Secret.
 type JavaKeystore struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

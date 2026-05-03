@@ -85,7 +85,7 @@ type ClusterJavaKeystoreStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 
-// ClusterJavaKeystore is the Schema for the clusterjavakeystores API.
+// ClusterJavaKeystore is a cluster-scoped resource that defines the desired state and observed state of a Java Keystore that is generated from a set of Root CA certificates and an optional TLS certificate. The generated Java Keystore is stored in a ConfigMap and the password for the Java Keystore is stored in a Secret. Namespaces can reference this ClusterJavaKeystore to use the generated Java Keystore.
 type ClusterJavaKeystore struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
