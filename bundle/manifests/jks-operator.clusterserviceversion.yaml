@@ -15,12 +15,7 @@ metadata:
             "name": "clusterjavakeystore-sample"
           },
           "spec": {
-            "rootCAConfigMaps": [
-              {
-                "name": "root-trusted-ca",
-                "namespace": "default"
-              }
-            ]
+            "addDefaultCACertificates": true
           }
         },
         {
@@ -34,17 +29,7 @@ metadata:
             "name": "javakeystore-sample"
           },
           "spec": {
-            "rootCAConfigMaps": [
-              {
-                "key": "ca.crt",
-                "name": "javakeystore-sample-ca"
-              }
-            ],
-            "tlsCertSecretRef": [
-              {
-                "name": "javakeystore-sample-tls"
-              }
-            ]
+            "addDefaultCACertificates": true
           }
         }
       ]
@@ -53,7 +38,7 @@ metadata:
       Developer Tools,Integration & Delivery,Middleware,OpenShift Optional,Security
     certified: "false"
     containerImage: quay.io/kenmoini/jks-operator:latest
-    createdAt: "2026-05-03T13:07:14Z"
+    createdAt: "2026-05-03T15:22:19Z"
     description: Generates Java Keystores dynamically for distribution to Java-based
       applications
     displayName: Java Keystore Operator
