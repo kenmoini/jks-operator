@@ -99,11 +99,16 @@ func (r *ClusterJavaKeystoreSecretInjectorReconciler) Reconcile(ctx context.Cont
 		}
 	}
 
+	// Resolve the system Secret name + data key from the CR spec — TargetSecret
+	// overrides may have customized either. The same key flows into labeled targets so
+	// consumers see one consistent key end-to-end.
+	sourceName, sourceKey := resolveClusterTargetSecret(cr)
+
 	// Read the password from the system Secret. The CR controller is responsible for
 	// keeping that Secret correct; we copy bytes from it rather than rederiving anything.
 	systemSecret := &corev1.Secret{}
 	systemSecretName := types.NamespacedName{
-		Name:      cr.Name + "-jks-password",
+		Name:      sourceName,
 		Namespace: cr.Spec.SystemNamespace,
 	}
 	if systemSecretName.Namespace == "" {
@@ -117,16 +122,25 @@ func (r *ClusterJavaKeystoreSecretInjectorReconciler) Reconcile(ctx context.Cont
 		}
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
 	}
-	wantPassword := systemSecret.Data[DefaultJavaKeystorePasswordSecretKey]
+	wantPassword := systemSecret.Data[sourceKey]
 	if len(wantPassword) == 0 {
 		secretInjectorLog.Info("System Secret password key empty; awaiting CR controller",
-			"ClusterJavaKeystoreName", crName, "SystemSecret", systemSecretName.String())
+			"ClusterJavaKeystoreName", crName, "SystemSecret", systemSecretName.String(), "DataKey", sourceKey)
 		return ctrl.Result{}, nil
 	}
 
-	if existing, ok := target.Data[DefaultJavaKeystorePasswordSecretKey]; ok &&
+	// If the configured data key changed since last injection (e.g. user updated
+	// Spec.TargetSecret.Key), strip the previously injected key so we don't leave stale
+	// password bytes under the old name.
+	previousKey := target.Annotations[DefaultInjectedDataKeyAnnotation]
+	if previousKey != "" && previousKey != sourceKey {
+		delete(target.Data, previousKey)
+	}
+
+	if existing, ok := target.Data[sourceKey]; ok &&
 		bytes.Equal(existing, wantPassword) &&
-		hasOwnershipAnnotations(target, CJKS_CR_Name, crName) {
+		hasOwnershipAnnotations(target, CJKS_CR_Name, crName) &&
+		target.Annotations[DefaultInjectedDataKeyAnnotation] == sourceKey {
 		secretInjectorLog.Info("Labeled Secret already up to date, skipping",
 			"ClusterJavaKeystoreName", crName, "SecretName", target.Name, "SecretNamespace", target.Namespace)
 		return ctrl.Result{}, nil
@@ -135,26 +149,40 @@ func (r *ClusterJavaKeystoreSecretInjectorReconciler) Reconcile(ctx context.Cont
 	if target.Data == nil {
 		target.Data = map[string][]byte{}
 	}
-	target.Data[DefaultJavaKeystorePasswordSecretKey] = wantPassword
+	target.Data[sourceKey] = wantPassword
 	setOwnershipAnnotations(target, CJKS_CR_Name, crName)
+	if target.Annotations == nil {
+		target.Annotations = map[string]string{}
+	}
+	target.Annotations[DefaultInjectedDataKeyAnnotation] = sourceKey
 
 	if err := r.Update(ctx, target); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
 	}
 	secretInjectorLog.Info("Successfully injected password into labeled Secret",
-		"ClusterJavaKeystoreName", crName, "SecretName", target.Name, "SecretNamespace", target.Namespace)
+		"ClusterJavaKeystoreName", crName, "SecretName", target.Name, "SecretNamespace", target.Namespace, "DataKey", sourceKey)
 	return ctrl.Result{}, nil
 }
 
+// cleanupUnlabeled removes the injected password key and our annotations from a Secret
+// that was previously injected but is no longer carrying our label. The injected data
+// key is read from the DefaultInjectedDataKeyAnnotation we stamped during injection,
+// falling back to DefaultJavaKeystorePasswordSecretKey for Secrets injected before that
+// annotation was added.
 func (r *ClusterJavaKeystoreSecretInjectorReconciler) cleanupUnlabeled(ctx context.Context, s *corev1.Secret) (ctrl.Result, error) {
-	delete(s.Data, DefaultJavaKeystorePasswordSecretKey)
+	dataKey := s.Annotations[DefaultInjectedDataKeyAnnotation]
+	if dataKey == "" {
+		dataKey = DefaultJavaKeystorePasswordSecretKey
+	}
+	delete(s.Data, dataKey)
 	delete(s.Annotations, DefaultOwningComponentAnnotationKey)
 	delete(s.Annotations, DefaultOwningInstanceAnnotationKey)
+	delete(s.Annotations, DefaultInjectedDataKeyAnnotation)
 	if err := r.Update(ctx, s); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
 	}
 	secretInjectorLog.Info("Cleaned up injected password data from unlabeled Secret",
-		"SecretName", s.Name, "SecretNamespace", s.Namespace)
+		"SecretName", s.Name, "SecretNamespace", s.Namespace, "DataKey", dataKey)
 	return ctrl.Result{}, nil
 }
 

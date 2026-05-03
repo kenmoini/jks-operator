@@ -109,12 +109,17 @@ func (r *ClusterJavaKeystoreConfigMapInjectorReconciler) Reconcile(ctx context.C
 		}
 	}
 
+	// Resolve the system ConfigMap name + data key from the CR spec — TargetConfigMap
+	// overrides may have customized either. The same key flows into labeled targets so
+	// consumers see one consistent key end-to-end.
+	sourceName, sourceKey := resolveClusterTargetConfigMap(cr)
+
 	// Read the system ConfigMap and copy its bytes + cert-hash annotation. The CR
 	// controller is responsible for keeping the system ConfigMap correct; we never
 	// re-render the keystore here.
 	systemCM := &corev1.ConfigMap{}
 	systemCMName := types.NamespacedName{
-		Name:      cr.Name + "-jks",
+		Name:      sourceName,
 		Namespace: cr.Spec.SystemNamespace,
 	}
 	if systemCMName.Namespace == "" {
@@ -132,17 +137,26 @@ func (r *ClusterJavaKeystoreConfigMapInjectorReconciler) Reconcile(ctx context.C
 	}
 
 	wantHash := systemCM.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation]
-	wantBytes := systemCM.BinaryData[DefaultJavaKeystoreConfigMapKey]
+	wantBytes := systemCM.BinaryData[sourceKey]
 	if len(wantBytes) == 0 || wantHash == "" {
 		configMapInjectorLog.Info("System ConfigMap not yet populated; awaiting CR controller",
-			"ClusterJavaKeystoreName", crName, "SystemConfigMap", systemCMName.String())
+			"ClusterJavaKeystoreName", crName, "SystemConfigMap", systemCMName.String(), "DataKey", sourceKey)
 		return ctrl.Result{}, nil
+	}
+
+	// If the configured data key changed since last injection (e.g. user updated
+	// Spec.TargetConfigMap.Key), strip the previously injected key so we don't leave
+	// stale data lingering under the old name.
+	previousKey := target.Annotations[DefaultInjectedDataKeyAnnotation]
+	if previousKey != "" && previousKey != sourceKey {
+		delete(target.BinaryData, previousKey)
 	}
 
 	// Idempotency.
 	if target.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] == wantHash &&
-		len(target.BinaryData[DefaultJavaKeystoreConfigMapKey]) > 0 &&
-		hasOwnershipAnnotations(target, CJKS_CR_Name, crName) {
+		len(target.BinaryData[sourceKey]) > 0 &&
+		hasOwnershipAnnotations(target, CJKS_CR_Name, crName) &&
+		target.Annotations[DefaultInjectedDataKeyAnnotation] == sourceKey {
 		configMapInjectorLog.Info("Labeled ConfigMap already up to date, skipping",
 			"ClusterJavaKeystoreName", crName, "ConfigMapName", target.Name, "ConfigMapNamespace", target.Namespace)
 		return ctrl.Result{}, nil
@@ -151,31 +165,40 @@ func (r *ClusterJavaKeystoreConfigMapInjectorReconciler) Reconcile(ctx context.C
 	if target.BinaryData == nil {
 		target.BinaryData = map[string][]byte{}
 	}
-	target.BinaryData[DefaultJavaKeystoreConfigMapKey] = wantBytes
+	target.BinaryData[sourceKey] = wantBytes
 	setOwnershipAnnotations(target, CJKS_CR_Name, crName)
 	target.Annotations[DefaultClusterJavaKeystoreCertHashAnnotation] = wantHash
+	target.Annotations[DefaultInjectedDataKeyAnnotation] = sourceKey
 
 	if err := r.Update(ctx, target); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
 	}
 	configMapInjectorLog.Info("Successfully injected Java Keystore into labeled ConfigMap",
-		"ClusterJavaKeystoreName", crName, "ConfigMapName", target.Name, "ConfigMapNamespace", target.Namespace, "CertHash", wantHash)
+		"ClusterJavaKeystoreName", crName, "ConfigMapName", target.Name, "ConfigMapNamespace", target.Namespace, "DataKey", sourceKey, "CertHash", wantHash)
 	return ctrl.Result{}, nil
 }
 
 // cleanupUnlabeled removes the injected key and our annotations from a ConfigMap that
 // was previously injected but is no longer carrying our label. The rest of the
 // ConfigMap (other data keys, other annotations, labels, owner refs) is preserved.
+// The injected data key is read from the DefaultInjectedDataKeyAnnotation we stamped
+// during injection, falling back to DefaultJavaKeystoreConfigMapKey for ConfigMaps
+// injected before that annotation was added.
 func (r *ClusterJavaKeystoreConfigMapInjectorReconciler) cleanupUnlabeled(ctx context.Context, cm *corev1.ConfigMap) (ctrl.Result, error) {
-	delete(cm.BinaryData, DefaultJavaKeystoreConfigMapKey)
+	dataKey := cm.Annotations[DefaultInjectedDataKeyAnnotation]
+	if dataKey == "" {
+		dataKey = DefaultJavaKeystoreConfigMapKey
+	}
+	delete(cm.BinaryData, dataKey)
 	delete(cm.Annotations, DefaultClusterJavaKeystoreCertHashAnnotation)
 	delete(cm.Annotations, DefaultOwningComponentAnnotationKey)
 	delete(cm.Annotations, DefaultOwningInstanceAnnotationKey)
+	delete(cm.Annotations, DefaultInjectedDataKeyAnnotation)
 	if err := r.Update(ctx, cm); err != nil {
 		return ctrl.Result{RequeueAfter: time.Second * 30}, err
 	}
 	configMapInjectorLog.Info("Cleaned up injected keystore data from unlabeled ConfigMap",
-		"ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace)
+		"ConfigMapName", cm.Name, "ConfigMapNamespace", cm.Namespace, "DataKey", dataKey)
 	return ctrl.Result{}, nil
 }
 

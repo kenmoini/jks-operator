@@ -38,7 +38,7 @@ metadata:
       Developer Tools,Integration & Delivery,Middleware,OpenShift Optional,Security
     certified: "false"
     containerImage: quay.io/kenmoini/jks-operator:latest
-    createdAt: "2026-05-03T15:22:19Z"
+    createdAt: "2026-05-03T15:53:54Z"
     description: Generates Java Keystores dynamically for distribution to Java-based
       applications
     displayName: Java Keystore Operator
