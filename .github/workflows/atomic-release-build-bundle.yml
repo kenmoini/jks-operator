@@ -50,6 +50,8 @@ jobs:
         run: |
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+          echo "TARGETOS=${platform.split('/')[0]}" >> $GITHUB_ENV
+          echo "TARGETARCH=${platform.split('/')[1]}" >> $GITHUB_ENV
 
       - name: Login to Quay Container Registry
         uses: docker/login-action@v3
@@ -86,8 +88,8 @@ jobs:
           file: ${{ env.CONTAINERFILE_PATH }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            TARGETOS=${{ matrix.platform.split('/')[0] }}
-            TARGETARCH=${{ matrix.platform.split('/')[1] }}
+            TARGETOS=${{ env.TARGETOS }}
+            TARGETARCH=${{ env.TARGETARCH }}
           #push: true
           #provenance: false
           #platforms: linux/amd64, linux/arm64
