@@ -28,10 +28,10 @@
 
 ## 2. Versioning the Operator
 
-1. Create a new Git tag for the release version `git tag v0.0.2`
-2. Change VERSION in the Makefile to reflect `0.0.2`
-3. Run `make release`
-4. Add/Commit changes
+1. Change VERSION in the Makefile to reflect `0.0.2`
+2. Run `make release`
+3. Add/Commit changes
+4. Create a new Git tag for the release version `git tag v0.0.2`
 5. Push the new tag to Git `git push origin v0.0.2`
 
 ## 3. Adding new release version to Operator Catalog
