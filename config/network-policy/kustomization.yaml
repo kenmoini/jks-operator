@@ -1,2 +1,4 @@
 resources:
 - allow-metrics-traffic.yaml
+- allow-openshift-monitoring.yaml
+- allow-openshift-logging.yaml

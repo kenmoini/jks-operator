@@ -31,8 +31,7 @@ metadata:
               "app.kubernetes.io/managed-by": "kustomize",
               "app.kubernetes.io/name": "jks-operator"
             },
-            "name": "javakeystore-sample",
-            "namespace": "default"
+            "name": "javakeystore-sample"
           },
           "spec": {
             "rootCAConfigMaps": [
@@ -40,14 +39,39 @@ metadata:
                 "key": "ca.crt",
                 "name": "javakeystore-sample-ca"
               }
+            ],
+            "tlsCertSecretRef": [
+              {
+                "name": "javakeystore-sample-tls"
+              }
             ]
           }
         }
       ]
-    capabilities: Basic Install
-    createdAt: "2026-05-02T14:10:44Z"
-    operators.operatorframework.io/builder: operator-sdk-v1.42.0
+    capabilities: Seamless Upgrades
+    categories: |
+      Developer Tools,Integration & Delivery,Middleware,OpenShift Optional,Security
+    certified: "false"
+    containerImage: quay.io/kenmoini/jks-operator:latest
+    createdAt: "2026-05-03T01:43:36Z"
+    description: Get faster upgrades by pre-pulling OpenShift Release images to nodes
+      so they are available as soon as scheduling occurs.
+    features.operators.openshift.io/cnf: "false"
+    features.operators.openshift.io/cni: "false"
+    features.operators.openshift.io/csi: "false"
+    features.operators.openshift.io/disconnected: "false"
+    features.operators.openshift.io/proxy-aware: "false"
+    features.operators.openshift.io/tls-profiles: "false"
+    operatorframework.io/suggested-namespace: jks-operator
+    operators.operatorframework.io/builder: operator-sdk-v1.42.2
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+  labels:
+    operatorframework.io/arch.amd64: supported
+    operatorframework.io/arch.arm64: supported
+    operatorframework.io/arch.ppc64le: supported
+    operatorframework.io/arch.s390x: supported
+    operatorframework.io/os.linux: supported
+    operatorframework.io/os.zos: supported
   name: jks-operator.v0.0.1
   namespace: placeholder
 spec:
@@ -249,13 +273,15 @@ spec:
   - certificate
   - ca
   - root
+  - tls
   links:
-  - name: Jks Operator
-    url: https://jks-operator.domain
+  - name: Java Keystore Operator
+    url: https://github.com/kenmoini/jks-operator
   maintainers:
   - email: ken@kenmoini.com
     name: Ken Moini
   maturity: alpha
+  minKubeVersion: 1.21.0
   provider:
     name: Ken Moini
     url: https://github.com/kenmoini/jks-operator

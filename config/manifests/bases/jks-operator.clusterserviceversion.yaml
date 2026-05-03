@@ -3,7 +3,27 @@ kind: ClusterServiceVersion
 metadata:
   annotations:
     alm-examples: '[]'
-    capabilities: Basic Install
+    capabilities: Seamless Upgrades
+    categories: |
+      Developer Tools,Integration & Delivery,Middleware,OpenShift Optional,Security
+    certified: "false"
+    containerImage: quay.io/kenmoini/jks-operator:latest
+    description: Get faster upgrades by pre-pulling OpenShift Release images to nodes
+      so they are available as soon as scheduling occurs.
+    features.operators.openshift.io/cnf: "false"
+    features.operators.openshift.io/cni: "false"
+    features.operators.openshift.io/csi: "false"
+    features.operators.openshift.io/disconnected: "false"
+    features.operators.openshift.io/proxy-aware: "false"
+    features.operators.openshift.io/tls-profiles: "false"
+    operatorframework.io/suggested-namespace: jks-operator
+  labels:
+    operatorframework.io/arch.amd64: supported
+    operatorframework.io/arch.arm64: supported
+    operatorframework.io/arch.ppc64le: supported
+    operatorframework.io/arch.s390x: supported
+    operatorframework.io/os.linux: supported
+    operatorframework.io/os.zos: supported
   name: jks-operator.v0.0.0
   namespace: placeholder
 spec:
@@ -47,14 +67,19 @@ spec:
   - certificate
   - ca
   - root
+  - tls
   links:
-  - name: Jks Operator
-    url: https://jks-operator.domain
+  - name: Java Keystore Operator
+    url: https://github.com/kenmoini/jks-operator
   maintainers:
   - email: ken@kenmoini.com
     name: Ken Moini
   maturity: alpha
+  minKubeVersion: 1.21.0
   provider:
     name: Ken Moini
     url: https://github.com/kenmoini/jks-operator
+  relatedImages:
+  - image: quay.io/kenmoini/jks-operator:v0.0.0
+    name: jks-operator
   version: 0.0.0

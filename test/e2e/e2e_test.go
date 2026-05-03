@@ -31,7 +31,7 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "jks-operator-system"
+const namespace = "jks-operator"
 
 // serviceAccountName created for the project
 const serviceAccountName = "jks-operator-controller-manager"
