@@ -54,7 +54,7 @@ jobs:
           echo "TARGETARCH=$(echo ${platform} | cut -d'/' -f2)" >> $GITHUB_ENV
 
       - name: Login to Quay Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: "${{ env.REGISTRY_HOSTNAME }}"
           username: "${{ secrets.REGISTRY_USERNAME }}"
@@ -125,7 +125,7 @@ jobs:
           merge-multiple: true
 
       - name: Login to Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: "${{ env.REGISTRY_HOSTNAME }}"
           username: "${{ secrets.REGISTRY_USERNAME }}"
